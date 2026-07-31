@@ -342,3 +342,82 @@ pub struct DocxVerificationReport {
     pub embedded_images_checked: usize,
     pub diagnostics: Vec<TaskDiagnostic>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct XlsxSourceMetadata {
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub package_entries: usize,
+    pub worksheets: usize,
+    pub embedded_images: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct XlsxDocumentGraph {
+    pub schema_version: u32,
+    pub offset_unit: String,
+    pub source: XlsxSourceMetadata,
+    pub parts: Vec<DocumentPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct XlsxEmbeddedImageTask {
+    /// OOXML package path, for example `xl/media/image1.png`.
+    pub entry_name: String,
+    pub task: ImageTaskDraft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct XlsxTaskDraft {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub policy_id: String,
+    pub policy: PolicyConfig,
+    pub document: XlsxDocumentGraph,
+    pub findings: Vec<Finding>,
+    #[serde(default)]
+    pub embedded_images: Vec<XlsxEmbeddedImageTask>,
+    #[serde(default)]
+    pub diagnostics: Vec<TaskDiagnostic>,
+    pub contains_sensitive_plaintext: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct XlsxResidualFinding {
+    pub part_id: String,
+    pub start: usize,
+    pub end: usize,
+    pub entity_type: EntityType,
+    pub detector: String,
+    pub explanation_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct XlsxImageResidualFinding {
+    pub entry_name: String,
+    pub line_index: usize,
+    pub entity_type: EntityType,
+    pub detector: String,
+    pub explanation_code: String,
+    pub ocr_rect: ImageRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct XlsxVerificationReport {
+    pub schema_version: u32,
+    pub passed: bool,
+    pub complete: bool,
+    pub checked_file: String,
+    pub sha256: String,
+    pub selected_findings: usize,
+    pub unreviewed_findings: usize,
+    pub target_residual_count: usize,
+    pub residual_findings: Vec<XlsxResidualFinding>,
+    pub image_residual_findings: Vec<XlsxImageResidualFinding>,
+    pub detectors_checked: Vec<String>,
+    pub package_entries_checked: usize,
+    pub metadata_scrubbed: bool,
+    pub embedded_images_checked: usize,
+    pub diagnostics: Vec<TaskDiagnostic>,
+}
