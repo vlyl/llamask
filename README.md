@@ -4,8 +4,8 @@ LlaMask 是一个面向个人与组织的本地离线数据脱敏工具。它在
 
 项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片和 DOCX
 文字纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG 以及 DOCX
-正文和隐藏文字部件均可执行规则和本地模型扫描，生成可编辑任务草稿、
-安全副本，并在落盘前独立复扫残留。
+正文、隐藏文字部件和 PNG/JPEG 嵌入图片均可执行规则和本地模型扫描，生成
+可编辑任务草稿、安全副本，并在落盘前独立复扫残留。
 
 ## 核心原则
 
@@ -128,9 +128,23 @@ cargo run -p llamask -- export-docx docx-task.json \
 cargo run -p llamask -- verify-docx docx-task.json sample_已脱敏.docx
 ```
 
-当前 DOCX 切片会安全阻断宏、ActiveX、OLE/嵌入对象和包含图片的文档；
-图片并非不支持，而是必须在下一小步真正接入现有 OCR/打码/复扫管线后才能
-放行，避免只处理图片外的文字便误报成功。验证报告不包含残留原值；
+DOCX 中的 PNG/JPEG 嵌入图片已经递归接入现有图片管线。扫描时提供含 OCR
+运行项的注册表，任务草稿会在 `embedded_images` 中保存逐图可编辑的遮罩
+子任务；导出时逐图去元数据重编码、替换 `word/media`，并对候选 DOCX 中
+的每张图片再次 OCR 复扫：
+
+```bash
+cargo run -p llamask -- scan-docx sample.docx \
+  --task docx-task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+cargo run -p llamask -- export-docx docx-task.json \
+  --output sample_已脱敏.docx \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+未提供 OCR 运行配置时仍可取得文字扫描草稿，但含图片文档会在导出时安全
+阻断并要求重新扫描。GIF、TIFF、SVG 等尚未支持的媒体格式，以及宏、
+ActiveX、OLE/嵌入对象仍会阻断。验证报告不包含残留原值；
 `complete: false` 表示策略启用的可选本地模型没有全部参与复扫。
 
 生成和验证策略：
@@ -162,5 +176,6 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 路径相对冻结批量评测仍存在语义漂移，所以两者暂时都以未校准结果进入
 复核。图片轻量组合当前只接入 OCR、规则和 SiameseUIE；Qwen 要等持久模型
 进程完成后再进入图片默认链路。仓库内的 mock sidecar 只用于协议测试。
-图形界面、XLSX/PPTX 和 PDF 适配器仍属于后续纵向切片；DOCX 嵌入图片
-递归处理仍是 DOCX 发布门槛。
+图形界面、XLSX/PPTX 和 PDF 适配器仍属于后续纵向切片。DOCX 的下一个
+发布门槛是双平台 Microsoft Word/LibreOffice 真实文件回归，以及继续扩展
+PNG/JPEG 之外的安全媒体支持。

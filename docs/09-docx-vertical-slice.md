@@ -1,6 +1,6 @@
 # DOCX 纵向切片与安全边界
 
-文档状态：V0.1，实现基线（2026-07-31）
+文档状态：V0.2，文字与 PNG/JPEG 嵌入图片实现基线（2026-07-31）
 
 ## 1. 已完成的用户流程
 
@@ -14,6 +14,11 @@
 6. 清理文档、人员、关系和 ZIP 元数据。
 7. 对内存中的候选副本重新解包、提取和复扫。
 8. 验证通过后原子落盘；不覆盖原件或已有文件。
+
+包含 PNG/JPEG 时，扫描阶段还会把每个 `word/media` 文件建立为独立图片
+子任务。用户可以在同一个 DOCX 任务 JSON 中修改每张图片的 `selected`、
+`reviewed` 和 `mask_rect`；导出阶段复用图片工作流进行实心打码和去元数据
+重编码，再把安全副本放回原 OOXML 路径。
 
 任务 JSON 含有文档原文和命中值，属于敏感文件。验证报告只记录位置、
 类型、检测器和错误码，不回显残留原值。
@@ -72,12 +77,12 @@ XML 中的 DTD 和文字节点内 CDATA 不进入宽松解析路径，避免未�
 - VBA 宏、ActiveX 和控件属性。
 - `word/embeddings/` 下的 OLE 或其他嵌入对象。
 - 除超链接以外的外部关系。
-- 当前包含 PNG/JPEG 嵌入图片的 DOCX。
+- GIF、TIFF、SVG、WMF、EMF 等尚未支持安全重编码与 OCR 的媒体格式。
 
-最后一项是暂时性安全门。现有图片切片已经具备 OCR、可编辑矩形、打码和
-OCR 复扫，但 DOCX 媒体还需要增加“解包图片—建立子任务—替换媒体—再次
-验证关系和像素”的编排。完成前，系统会在扫描任务中给出明确诊断，并在
-导出时拒绝整个文件，不会把图片中的潜在敏感信息遗漏为成功。
+PNG/JPEG 已完成“解包图片—建立子任务—替换媒体—再次验证关系和像素”
+编排。扫描时如果未提供 OCR 运行注册表，系统仍会生成文字草稿并给出明确
+诊断，但导出会拒绝整个文件，要求用户使用 OCR 配置重新扫描。这样不会把
+图片中的潜在敏感信息遗漏为成功。
 
 ## 6. 独立验证
 
@@ -89,7 +94,9 @@ OCR 复扫，但 DOCX 媒体还需要增加“解包图片—建立子任务—�
 - 规则、精确词和已配置本地模型重新运行。
 - 用户已明确保留的完整命中值按任务快照排除。
 - 核心/扩展属性、自定义数据、人员信息、修订身份、关系和 ZIP 注释复核。
-- 嵌入图片、嵌入对象和主动内容计数复核。
+- 每个 PNG/JPEG 嵌入图片重新解码并执行 OCR、规则和可选模型复扫。
+- 嵌入图片任务与 OOXML 路径、数量、格式和尺寸的一致性检查。
+- 嵌入对象、主动内容和不支持媒体格式计数复核。
 
 `passed` 表示当前支持域没有残留且元数据已清理；`complete` 进一步表示策略
 启用的所有可选模型都实际参与了每个文本部分的复扫。未配置可选模型时，
@@ -113,13 +120,23 @@ OCR 复扫，但 DOCX 媒体还需要增加“解包图片—建立子任务—�
 显示为缺字框；这不影响 OOXML 文本抽取，但发布前仍必须在安装了中文字体
 的 Microsoft Word 和 LibreOffice 上进行双平台视觉回归。
 
+嵌入图片回归使用合成身份证图片：PP-OCR 识别出 1 个图片逻辑命中，导出
+后的 DOCX 保持单页布局，图片原位置出现实心遮罩；包内独立 OCR 复扫得到
+`embedded_images_checked: 1`、`target_residual_count: 0`。测试数据全部为
+生成内容，不含真实个人信息。
+
 ## 8. 命令
 
 ```bash
-cargo run -p llamask -- scan-docx sample.docx --task task.json
-cargo run -p llamask -- export-docx task.json --output sample_已脱敏.docx
-cargo run -p llamask -- verify-docx task.json sample_已脱敏.docx
+cargo run -p llamask -- scan-docx sample.docx --task task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+cargo run -p llamask -- export-docx task.json --output sample_已脱敏.docx \
+  --runtimes config/runtimes/development-ocr-small.json
+cargo run -p llamask -- verify-docx task.json sample_已脱敏.docx \
+  --runtimes config/runtimes/development-ocr-small.json
 ```
 
-三个命令都可传 `--runtimes`。扫描还可传 `--policy`；策略快照会保存在任务
-中，导出和验证会拒绝 `policy_id` 与快照不一致的任务。
+三个命令都可传 `--runtimes`。无嵌入图片时它仍是可选参数；有嵌入图片时
+必须在扫描、导出和验证中提供含同一 OCR 运行项的注册表。扫描还可传
+`--ocr-runtime` 选择非默认 OCR id，并可传 `--policy`；策略快照会保存在
+任务中，导出和验证会拒绝 `policy_id` 与快照不一致的任务。

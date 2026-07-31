@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use llamask_core::{
     DocxTaskDraft, ImageTaskDraft, PolicyConfig, RuntimeRegistry, TaskDraft,
     export_docx_task_with_runtimes, export_image_task_with_runtimes, export_task_with_runtimes,
-    render_task_with_runtimes, scan_docx_with_policy, scan_image_with_policy,
+    render_task_with_runtimes, scan_docx_with_policy_and_images, scan_image_with_policy,
     scan_path_with_policy, scan_text_with_policy, verify_docx_file_with_runtimes,
     verify_file_with_runtimes, verify_image_file_with_runtimes,
 };
@@ -70,6 +70,9 @@ enum Command {
         policy: Option<PathBuf>,
         #[arg(long)]
         runtimes: Option<PathBuf>,
+        /// 注册表中的 OCR 运行项 id；提供 runtimes 时递归扫描嵌入图片
+        #[arg(long, default_value = "pp_ocr_small")]
+        ocr_runtime: String,
     },
     /// 按任务草稿生成脱敏副本；不会覆盖原件或已有文件
     Export {
@@ -304,24 +307,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             task,
             policy,
             runtimes,
+            ocr_runtime,
         } => {
             let policy = match policy {
                 Some(path) => read_policy(&path)?,
                 None => PolicyConfig::default(),
             };
             let runtimes = read_runtimes(runtimes.as_deref())?;
-            let draft = scan_docx_with_policy(&input, &policy, runtimes.as_ref())?;
+            let draft = scan_docx_with_policy_and_images(
+                &input,
+                &policy,
+                runtimes.as_ref(),
+                runtimes.as_ref().map(|_| ocr_runtime.as_str()),
+            )?;
             let bytes = serde_json::to_vec_pretty(&draft)?;
             write_new(&task, &bytes)?;
             println!(
-                "DOCX 扫描完成：{} 个命中，{} 个待复核，{} 个文本部分；任务草稿包含敏感原文，请妥善保管。\n{}",
+                "DOCX 扫描完成：{} 个文本命中、{} 个图片逻辑命中，{} 个待复核，{} 个文本部分、{} 张嵌入图片；任务草稿包含敏感原文，请妥善保管。\n{}",
                 draft.findings.len(),
+                draft
+                    .embedded_images
+                    .iter()
+                    .flat_map(|image| image
+                        .task
+                        .findings
+                        .iter()
+                        .map(move |finding| (&image.entry_name, &finding.group_id)))
+                    .collect::<BTreeSet<_>>()
+                    .len(),
                 draft
                     .findings
                     .iter()
                     .filter(|finding| !finding.reviewed)
-                    .count(),
+                    .count()
+                    + draft
+                        .embedded_images
+                        .iter()
+                        .flat_map(|image| image
+                            .task
+                            .findings
+                            .iter()
+                            .filter(|finding| !finding.reviewed)
+                            .map(move |finding| (&image.entry_name, &finding.group_id)))
+                        .collect::<BTreeSet<_>>()
+                        .len(),
                 draft.document.parts.len(),
+                draft.embedded_images.len(),
                 task.display()
             );
             for diagnostic in &draft.diagnostics {

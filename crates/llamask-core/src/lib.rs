@@ -9,15 +9,15 @@ pub mod workflow;
 
 pub use docx_workflow::{
     DocxWorkflowError, export_docx_task_with_runtimes, scan_docx_with_policy,
-    verify_docx_file_with_runtimes,
+    scan_docx_with_policy_and_images, verify_docx_file_with_runtimes,
 };
 pub use image_workflow::{
     ImageWorkflowError, export_image_task_with_runtimes, scan_image_with_policy,
     verify_image_file_with_runtimes,
 };
 pub use model::{
-    DocxTaskDraft, DocxVerificationReport, Finding, ImageTaskDraft, ImageVerificationReport,
-    TaskDraft, VerificationReport,
+    DocxEmbeddedImageTask, DocxTaskDraft, DocxVerificationReport, Finding, ImageTaskDraft,
+    ImageVerificationReport, TaskDraft, VerificationReport,
 };
 pub use policy::{PolicyConfig, PolicyError};
 pub use sidecar::{RuntimeRegistry, SidecarError};

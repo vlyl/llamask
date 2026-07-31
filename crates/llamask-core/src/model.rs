@@ -281,6 +281,13 @@ pub struct DocxDocumentGraph {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DocxEmbeddedImageTask {
+    /// OOXML package path, for example `word/media/image1.png`.
+    pub entry_name: String,
+    pub task: ImageTaskDraft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocxTaskDraft {
     pub schema_version: u32,
     pub task_id: String,
@@ -288,6 +295,9 @@ pub struct DocxTaskDraft {
     pub policy: PolicyConfig,
     pub document: DocxDocumentGraph,
     pub findings: Vec<Finding>,
+    /// Embedded PNG/JPEG images are independent editable image subtasks.
+    #[serde(default)]
+    pub embedded_images: Vec<DocxEmbeddedImageTask>,
     #[serde(default)]
     pub diagnostics: Vec<TaskDiagnostic>,
     pub contains_sensitive_plaintext: bool,
@@ -304,6 +314,16 @@ pub struct DocxResidualFinding {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocxImageResidualFinding {
+    pub entry_name: String,
+    pub line_index: usize,
+    pub entity_type: EntityType,
+    pub detector: String,
+    pub explanation_code: String,
+    pub ocr_rect: ImageRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocxVerificationReport {
     pub schema_version: u32,
     pub passed: bool,
@@ -314,6 +334,8 @@ pub struct DocxVerificationReport {
     pub unreviewed_findings: usize,
     pub target_residual_count: usize,
     pub residual_findings: Vec<DocxResidualFinding>,
+    #[serde(default)]
+    pub image_residual_findings: Vec<DocxImageResidualFinding>,
     pub detectors_checked: Vec<String>,
     pub package_entries_checked: usize,
     pub metadata_scrubbed: bool,
