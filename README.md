@@ -3,9 +3,10 @@
 LlaMask 是一个面向个人与组织的本地离线数据脱敏工具。它在不上传文件、不依赖云端服务的前提下，识别文本、Office 文档和图片中的敏感信息，供用户复核后生成脱敏副本。
 
 项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片、DOCX、
-XLSX 和 PPTX 纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG、
+XLSX、PPTX 和 PDF 纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG、
 Office 文档的可见/隐藏文字域、备注、批注、母版及嵌入图片均可执行规则和
-本地模型扫描，生成可编辑任务草稿、安全副本，并在落盘前独立复扫残留。
+本地模型扫描；PDF 可逐页 OCR、编辑遮罩并以全页安全栅格化模式导出。所有
+格式均生成可编辑任务草稿、安全副本，并在落盘前独立复扫残留。
 
 ## 核心原则
 
@@ -30,6 +31,7 @@ Office 文档的可见/隐藏文字域、备注、批注、母版及嵌入图片
 - [DOCX 纵向切片与安全边界](docs/09-docx-vertical-slice.md)
 - [XLSX 纵向切片与安全边界](docs/10-xlsx-vertical-slice.md)
 - [PPTX 纵向切片与安全边界](docs/11-pptx-vertical-slice.md)
+- [PDF 纵向切片与安全边界](docs/12-pdf-vertical-slice.md)
 
 ## 当前确定的首发范围
 
@@ -194,6 +196,31 @@ cargo run -p llamask -- verify-pptx pptx-task.json sample_已脱敏.pptx \
 改为 `about:blank`。图表/缓存、嵌入工作簿、外部数据、宏、ActiveX、3D
 模型、音视频和非 PNG/JPEG 媒体当前会安全阻断。详见 PPTX 安全边界文档。
 
+PDF 首个安全基线使用 Poppler 在固定 200 DPI 下渲染全部页面，再复用图片
+OCR 和可编辑 `mask_rect` 任务。导出不会复制源 PDF 的对象树，而是把打码
+后的页面作为 JPEG 图像从零构造新 PDF，因此表单、批注、链接、附件、脚本、
+隐藏文字、元数据和增量历史均不会进入副本：
+
+```bash
+cargo run -p llamask -- scan-pdf sample.pdf \
+  --task pdf-task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- export-pdf pdf-task.json \
+  --output sample_已脱敏.pdf \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- verify-pdf pdf-task.json sample_已脱敏.pdf \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+该模式保持页面视觉外观和顺序，但不保留文字搜索/复制、矢量编辑、表单和
+链接交互。输出必须再次通过逐页 OCR、目标值检查和严格的仅图像 PDF 结构
+验证才会原子落盘。当前需要本机或安装包提供 `pdfinfo`、`pdftoppm`；可用
+`LLAMASK_PDFINFO`、`LLAMASK_PDFTOPPM` 指向捆绑版本。加密 PDF、超过
+100 MiB、超过 200 页或渲染后超过 5 亿像素的文件会安全拒绝。详见 PDF
+安全边界文档。
+
 生成和验证策略：
 
 ```bash
@@ -223,6 +250,6 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 路径相对冻结批量评测仍存在语义漂移，所以两者暂时都以未校准结果进入
 复核。图片轻量组合当前只接入 OCR、规则和 SiameseUIE；Qwen 要等持久模型
 进程完成后再进入图片默认链路。仓库内的 mock sidecar 只用于协议测试。
-图形界面和 PDF 适配器仍属于后续纵向切片。Office 适配器的下一个发布门槛
-是双平台 Microsoft Office/LibreOffice/Keynote 真实文件回归，以及继续
-扩展 PNG/JPEG 之外的安全媒体支持。
+图形界面、PDF 对象保留/干净搜索层模式仍属于后续纵向切片。Office 与 PDF
+适配器的下一个发布门槛是双平台 Microsoft Office/LibreOffice/Keynote 与
+系统 PDF 阅读器真实文件回归，以及继续扩展 PNG/JPEG 之外的安全媒体支持。

@@ -264,6 +264,66 @@ pub struct ImageVerificationReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PdfSourceMetadata {
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub pages: usize,
+    pub raster_dpi: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfPageTask {
+    /// One-based page number in the source PDF.
+    pub page_number: usize,
+    /// Each page is an editable OCR image task at the fixed rasterization DPI.
+    pub task: ImageTaskDraft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfTaskDraft {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub policy_id: String,
+    pub policy: PolicyConfig,
+    pub source: PdfSourceMetadata,
+    pub ocr_runtime_id: String,
+    pub pages: Vec<PdfPageTask>,
+    #[serde(default)]
+    pub diagnostics: Vec<TaskDiagnostic>,
+    pub contains_sensitive_plaintext: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PdfResidualFinding {
+    pub page_number: usize,
+    pub line_index: usize,
+    pub entity_type: EntityType,
+    pub detector: String,
+    pub explanation_code: String,
+    pub ocr_rect: ImageRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PdfVerificationReport {
+    pub schema_version: u32,
+    pub passed: bool,
+    pub complete: bool,
+    pub checked_file: String,
+    pub sha256: String,
+    pub selected_findings: usize,
+    pub unreviewed_findings: usize,
+    pub target_residual_count: usize,
+    pub residual_findings: Vec<PdfResidualFinding>,
+    pub detectors_checked: Vec<String>,
+    pub pages_checked: usize,
+    /// Safe baseline: every output page is a single raster image.
+    pub rasterized_pages: usize,
+    pub structure_sanitized: bool,
+    pub diagnostics: Vec<TaskDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocxSourceMetadata {
     pub path: String,
     pub sha256: String,
