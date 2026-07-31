@@ -1,0 +1,120 @@
+# PPTX 纵向切片与安全边界
+
+文档状态：V0.1，文字与 PNG/JPEG 嵌入图片实现基线（2026-08-01）
+
+## 1. 已完成的用户流程
+
+当前 CLI 已跑通完整的 PPTX 脱敏事务：
+
+1. 安全读取 PPTX ZIP 包并验证资源上限和必要 OOXML 部件。
+2. 从页面、表格、备注、批注、隐藏页、母版和版式建立任务草稿。
+3. 可选递归扫描 `ppt/media` 下的 PNG/JPEG，生成逐图遮罩子任务。
+4. 用户可以修改 `selected`、`reviewed`、`replacement` 和图片 `mask_rect`。
+5. 在原 OOXML 文本节点中替换命中，保留 run 样式、页面结构和可编辑性。
+6. 清理作者、批注时间、绘图描述、外部链接和 ZIP 隐私元数据。
+7. 对候选副本重新解包，复扫所有支持的文字域和每张嵌入图片。
+8. 验证通过后原子落盘；不覆盖原件或已有文件。
+
+任务 JSON 包含演示文稿原文、OCR 文本和命中值，应当视为敏感文件。验证
+报告只记录位置、类型、检测器和错误码，不回显残留原文。
+
+## 2. 当前支持的内容域
+
+- 幻灯片上的文本框、自由形状、组合形状和表格文字。
+- 同一 DrawingML 段落中跨多个 `a:r` 的命中。
+- 隐藏幻灯片；扫描不依赖页面的 `show` 状态。
+- 演讲者备注、备注母版和讲义母版文字。
+- 现代批注、批注回复以及兼容的传统批注文字节点。
+- 幻灯片母版和版式中的文字。
+- SmartArt/关系图 XML 中的 DrawingML 文字。
+- `ppt/media` 下的 PNG/JPEG 图片及图片替代文字的清理。
+
+所有文字定位使用 OOXML entry 路径加段落或文本节点序号，偏移单位为
+Unicode scalar。段落先拼接后检测，回写时只修改与命中相交的 `a:t`，从而
+保留每个 run 的字体、颜色、链接和其他样式。
+
+## 3. 输入安全限制
+
+| 项目 | 当前上限或行为 |
+| --- | --- |
+| PPTX 文件 | 100 MiB |
+| ZIP entry 数 | 10,000 |
+| 单 entry 解压后大小 | 100 MiB |
+| 单 XML 大小 | 20 MiB |
+| 总解压量 | 500 MiB |
+| 大文件压缩比 | 1,000:1 |
+| 路径 | 拒绝重复、绝对、反斜线、NUL 和目录穿越路径 |
+| 加密 entry | 拒绝 |
+| 压缩方法 | 仅 Stored 和 Deflated |
+
+缺少 `[Content_Types].xml`、`_rels/.rels`、`ppt/presentation.xml`、
+`ppt/_rels/presentation.xml.rels` 或幻灯片 XML 时拒绝处理。XML 中的 DTD
+和文字节点内 CDATA 不进入宽松解析路径。
+
+## 4. 导出时的隐私清理
+
+- 核心和扩展属性中的作者、公司、模板、标题列表等值清空。
+- 删除自定义属性、`customXml/`、自定义数据、标签、打印机设置和缩略图。
+- 批注作者统一为 `LlaMask`/`LM`，创建和修改时间固定为中性值。
+- 清空形状和图片的名称、标题、描述以及页面、母版、版式的自定义名称。
+- 外部超链接目标改写为 `about:blank`；其他外部关系拒绝导出。
+- 所有 ZIP entry 重新压缩，不继承包注释、文件注释、额外字段或时间戳。
+
+未命中且不属于隐私清理范围的主题等 XML 保持原始解压字节。受支持的嵌入
+图片会统一去元数据重编码，即使图片内没有检测命中。
+
+## 5. 明确阻断的内容
+
+- VBA 宏、ActiveX 和控件属性。
+- `ppt/embeddings/` 下的 OLE、嵌入工作簿或其他对象。
+- 图表及其缓存和嵌入数据。
+- 外部链接、外部数据以及除超链接以外的外部关系。
+- 3D 模型、墨迹、数字签名。
+- GIF、TIFF、SVG、WMF、EMF、音频和视频等尚未支持的媒体格式。
+
+这些内容可能在不可见 XML、二进制对象、媒体或缓存中保存敏感信息。当前
+版本选择拒绝整个导出，不把“无法完整验证”误报为成功。图表后续可以在
+建立图表缓存、数据标签和嵌入工作簿的完整处理链后单独放开。
+
+## 6. 独立验证
+
+候选副本在落盘前执行：
+
+- ZIP 路径、压缩资源、必要 entry 和不支持载荷再次验证。
+- 页面、隐藏页、备注、批注、母版、版式和关系图文字重新提取。
+- 每个已选原值在原定位点的残留检查。
+- 规则、精确词和已配置本地模型重新运行。
+- 用户明确保留的命中按原定位点和任务快照排除。
+- 作者、批注时间、绘图描述、外部关系、被删除部件和 ZIP 注释复核。
+- 每个 PNG/JPEG 嵌入图片重新解码并执行 OCR、规则和可选模型复扫。
+- 嵌入图片任务与 OOXML 路径、数量、格式的一致性检查。
+
+`passed` 表示当前支持域没有残留、嵌入图片通过复扫且元数据已清理；
+`complete` 进一步表示策略启用的所有可选本地模型都实际参与了复扫。
+
+## 7. 回归样本与结果
+
+`fixtures/pptx/comprehensive.pptx` 只包含合成数据，覆盖跨 run 电话和邮箱、
+表格、备注、现代批注及回复、隐藏页、母版、版式和外部超链接。规则基线
+得到 12 个结构化命中，导出后目标残留为 0。
+
+综合嵌入图片回归另外使用合成身份证图片。端到端结果为 12 个结构化命中、
+1 个图片逻辑命中，共 13 个选中结果；文字和 OCR 目标残留均为 0。两个输出
+文件都已由独立演示文稿引擎重新导入、逐页渲染并通过溢出检查，隐藏状态、
+表格、备注、批注和主题保持可用。发布前仍需在 Windows/macOS 的 Microsoft
+PowerPoint、Keynote 和 LibreOffice Impress 上扩展真实文件与复杂动画回归。
+
+## 8. 命令
+
+```bash
+cargo run -p llamask -- scan-pptx sample.pptx --task task.json \
+  --policy config/policies/default.json \
+  --runtimes config/runtimes/development-ocr-small.json
+cargo run -p llamask -- export-pptx task.json --output sample_已脱敏.pptx \
+  --runtimes config/runtimes/development-ocr-small.json
+cargo run -p llamask -- verify-pptx task.json sample_已脱敏.pptx \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+无嵌入图片时 `--runtimes` 可省略。有嵌入图片时，扫描、导出和验证必须提供
+含同一 OCR 运行项的注册表；扫描还可用 `--ocr-runtime` 选择非默认 OCR id。

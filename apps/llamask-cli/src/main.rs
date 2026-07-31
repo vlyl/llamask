@@ -8,11 +8,13 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use clap::{Parser, Subcommand};
 use llamask_core::{
-    DocxTaskDraft, ImageTaskDraft, PolicyConfig, RuntimeRegistry, TaskDraft, XlsxTaskDraft,
-    export_docx_task_with_runtimes, export_image_task_with_runtimes, export_task_with_runtimes,
-    export_xlsx_task_with_runtimes, render_task_with_runtimes, scan_docx_with_policy_and_images,
-    scan_image_with_policy, scan_path_with_policy, scan_text_with_policy, scan_xlsx_with_policy,
-    verify_docx_file_with_runtimes, verify_file_with_runtimes, verify_image_file_with_runtimes,
+    DocxTaskDraft, ImageTaskDraft, PolicyConfig, PptxTaskDraft, RuntimeRegistry, TaskDraft,
+    XlsxTaskDraft, export_docx_task_with_runtimes, export_image_task_with_runtimes,
+    export_pptx_task_with_runtimes, export_task_with_runtimes, export_xlsx_task_with_runtimes,
+    render_task_with_runtimes, scan_docx_with_policy_and_images, scan_image_with_policy,
+    scan_path_with_policy, scan_pptx_with_policy_and_images, scan_text_with_policy,
+    scan_xlsx_with_policy, verify_docx_file_with_runtimes, verify_file_with_runtimes,
+    verify_image_file_with_runtimes, verify_pptx_file_with_runtimes,
     verify_xlsx_file_with_runtimes,
 };
 
@@ -88,6 +90,19 @@ enum Command {
         #[arg(long, default_value = "pp_ocr_small")]
         ocr_runtime: String,
     },
+    /// 扫描 PPTX 的页面、表格、备注、批注、隐藏页、母版、版式和嵌入图片
+    ScanPptx {
+        input: PathBuf,
+        #[arg(short, long)]
+        task: PathBuf,
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        #[arg(long)]
+        runtimes: Option<PathBuf>,
+        /// 注册表中的 OCR 运行项 id；提供 runtimes 时递归扫描嵌入图片
+        #[arg(long, default_value = "pp_ocr_small")]
+        ocr_runtime: String,
+    },
     /// 按任务草稿生成脱敏副本；不会覆盖原件或已有文件
     Export {
         task: PathBuf,
@@ -121,6 +136,14 @@ enum Command {
         #[arg(long)]
         runtimes: Option<PathBuf>,
     },
+    /// 生成最小 OOXML 改动的 PPTX 脱敏副本，并执行包内残留复扫
+    ExportPptx {
+        task: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(long)]
+        runtimes: Option<PathBuf>,
+    },
     /// 对已有副本重新运行规则和可选本地模型
     Verify {
         task: PathBuf,
@@ -144,6 +167,13 @@ enum Command {
     },
     /// 对 XLSX 副本执行单元格、公式、批注、图片、元数据和 ZIP 结构复核
     VerifyXlsx {
+        task: PathBuf,
+        file: PathBuf,
+        #[arg(long)]
+        runtimes: Option<PathBuf>,
+    },
+    /// 对 PPTX 副本执行页面、备注、批注、母版、图片、元数据和 ZIP 结构复核
+    VerifyPptx {
         task: PathBuf,
         file: PathBuf,
         #[arg(long)]
@@ -196,6 +226,10 @@ fn read_docx_task(path: &Path) -> Result<DocxTaskDraft, Box<dyn std::error::Erro
 }
 
 fn read_xlsx_task(path: &Path) -> Result<XlsxTaskDraft, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+fn read_pptx_task(path: &Path) -> Result<PptxTaskDraft, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
@@ -463,6 +497,74 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Command::ScanPptx {
+            input,
+            task,
+            policy,
+            runtimes,
+            ocr_runtime,
+        } => {
+            let policy = match policy {
+                Some(path) => read_policy(&path)?,
+                None => PolicyConfig::default(),
+            };
+            let runtimes = read_runtimes(runtimes.as_deref())?;
+            let draft = scan_pptx_with_policy_and_images(
+                &input,
+                &policy,
+                runtimes.as_ref(),
+                runtimes.as_ref().map(|_| ocr_runtime.as_str()),
+            )?;
+            let bytes = serde_json::to_vec_pretty(&draft)?;
+            write_new(&task, &bytes)?;
+            let image_findings = draft
+                .embedded_images
+                .iter()
+                .flat_map(|image| {
+                    image
+                        .task
+                        .findings
+                        .iter()
+                        .map(move |finding| (&image.entry_name, &finding.group_id))
+                })
+                .collect::<BTreeSet<_>>()
+                .len();
+            let unreviewed = draft
+                .findings
+                .iter()
+                .filter(|finding| !finding.reviewed)
+                .count()
+                + draft
+                    .embedded_images
+                    .iter()
+                    .flat_map(|image| {
+                        image
+                            .task
+                            .findings
+                            .iter()
+                            .filter(|finding| !finding.reviewed)
+                            .map(move |finding| (&image.entry_name, &finding.group_id))
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .len();
+            println!(
+                "PPTX 扫描完成：{} 个结构化命中、{} 个图片逻辑命中，{} 个待复核，{} 个内容部分、{} 页、{} 张嵌入图片；任务草稿包含敏感原文，请妥善保管。\n{}",
+                draft.findings.len(),
+                image_findings,
+                unreviewed,
+                draft.document.parts.len(),
+                draft.document.source.slides,
+                draft.embedded_images.len(),
+                task.display()
+            );
+            for diagnostic in &draft.diagnostics {
+                eprintln!(
+                    "提示 [{}] {}",
+                    diagnostic.detector_id.as_deref().unwrap_or("pptx-core"),
+                    diagnostic.message
+                );
+            }
+        }
         Command::Export {
             task,
             output,
@@ -501,6 +603,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let draft = read_xlsx_task(&task)?;
             let runtimes = read_runtimes(runtimes.as_deref())?;
             let report = export_xlsx_task_with_runtimes(&draft, &output, runtimes.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::ExportPptx {
+            task,
+            output,
+            runtimes,
+        } => {
+            let draft = read_pptx_task(&task)?;
+            let runtimes = read_runtimes(runtimes.as_deref())?;
+            let report = export_pptx_task_with_runtimes(&draft, &output, runtimes.as_ref())?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Verify {
@@ -550,6 +662,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let draft = read_xlsx_task(&task)?;
             let runtimes = read_runtimes(runtimes.as_deref())?;
             let report = verify_xlsx_file_with_runtimes(&draft, &file, runtimes.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.passed {
+                std::process::exit(2);
+            }
+        }
+        Command::VerifyPptx {
+            task,
+            file,
+            runtimes,
+        } => {
+            let draft = read_pptx_task(&task)?;
+            let runtimes = read_runtimes(runtimes.as_deref())?;
+            let report = verify_pptx_file_with_runtimes(&draft, &file, runtimes.as_ref())?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             if !report.passed {
                 std::process::exit(2);
