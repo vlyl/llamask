@@ -3,6 +3,7 @@ pub mod docx_workflow;
 pub mod image_workflow;
 pub mod model;
 pub mod policy;
+pub mod pptx_workflow;
 pub mod sidecar;
 pub mod text;
 pub mod workflow;
@@ -18,9 +19,14 @@ pub use image_workflow::{
 };
 pub use model::{
     DocxEmbeddedImageTask, DocxTaskDraft, DocxVerificationReport, Finding, ImageTaskDraft,
-    ImageVerificationReport, TaskDraft, VerificationReport, XlsxTaskDraft, XlsxVerificationReport,
+    ImageVerificationReport, PptxTaskDraft, PptxVerificationReport, TaskDraft, VerificationReport,
+    XlsxTaskDraft, XlsxVerificationReport,
 };
 pub use policy::{PolicyConfig, PolicyError};
+pub use pptx_workflow::{
+    PptxWorkflowError, export_pptx_task_with_runtimes, scan_pptx_with_policy,
+    scan_pptx_with_policy_and_images, verify_pptx_file_with_runtimes,
+};
 pub use sidecar::{RuntimeRegistry, SidecarError};
 pub use workflow::{
     WorkflowError, export_task, export_task_with_runtimes, render_task_with_runtimes, scan_path,

@@ -30,6 +30,9 @@ evaluation/
     ├── generate_xlsx_fixture.mjs
     ├── prepare_xlsx_fixture.py
     ├── inspect_xlsx_fixture.mjs
+    ├── generate_pptx_fixture.mjs
+    ├── prepare_pptx_fixture.py
+    ├── inspect_pptx_fixture.mjs
     ├── validate_dataset.py
     ├── run_rules_baseline.py
     ├── run_ocr_benchmark.py
@@ -114,6 +117,22 @@ node evaluation/scripts/inspect_xlsx_fixture.mjs \
 这三个 JavaScript 脚本需要开发环境中的 `@oai/artifact-tool`。提交的
 `fixtures/xlsx/comprehensive.xlsx` 不依赖该工具即可运行 Rust 回归测试，
 且只包含合成号码和邮箱。
+
+PPTX 合成回归同样先由演示文稿引擎生成，再确定性加入隐藏页、母版和版式
+边界；最后重新导入、逐页渲染并执行溢出检查：
+
+```bash
+node evaluation/scripts/generate_pptx_fixture.mjs \
+  /tmp/llamask-pptx-base.pptx /tmp/llamask-pptx-base-preview
+python3 evaluation/scripts/prepare_pptx_fixture.py \
+  /tmp/llamask-pptx-base.pptx fixtures/pptx/comprehensive.pptx
+node evaluation/scripts/inspect_pptx_fixture.mjs \
+  fixtures/pptx/comprehensive.pptx /tmp/llamask-pptx-preview
+```
+
+可在生成命令末尾增加一个 PNG 路径，构造嵌入图片 OCR 端到端样本。提交的
+`fixtures/pptx/comprehensive.pptx` 不含图片和真实信息，覆盖跨 run、表格、
+备注、批注及回复、隐藏页、母版、版式和外部超链接。
 
 ## 数据使用限制
 

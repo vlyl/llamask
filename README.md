@@ -2,11 +2,10 @@
 
 LlaMask 是一个面向个人与组织的本地离线数据脱敏工具。它在不上传文件、不依赖云端服务的前提下，识别文本、Office 文档和图片中的敏感信息，供用户复核后生成脱敏副本。
 
-项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片、DOCX 和
-XLSX 纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG、DOCX
-正文与隐藏文字部件，以及 XLSX 单元格、公式、批注、隐藏工作表和嵌入图片
-均可执行规则和本地模型扫描，生成可编辑任务草稿、安全副本，并在落盘前
-独立复扫残留。
+项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片、DOCX、
+XLSX 和 PPTX 纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG、
+Office 文档的可见/隐藏文字域、备注、批注、母版及嵌入图片均可执行规则和
+本地模型扫描，生成可编辑任务草稿、安全副本，并在落盘前独立复扫残留。
 
 ## 核心原则
 
@@ -30,6 +29,7 @@ XLSX 纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG、DOC
 - [策略与本地模型进程协议](docs/08-policy-and-sidecar-protocol.md)
 - [DOCX 纵向切片与安全边界](docs/09-docx-vertical-slice.md)
 - [XLSX 纵向切片与安全边界](docs/10-xlsx-vertical-slice.md)
+- [PPTX 纵向切片与安全边界](docs/11-pptx-vertical-slice.md)
 
 ## 当前确定的首发范围
 
@@ -173,6 +173,27 @@ cargo run -p llamask -- verify-xlsx xlsx-task.json sample_已脱敏.xlsx \
 宏、ActiveX、嵌入对象和非 PNG/JPEG 媒体目前会安全阻断，避免生成看似
 成功但仍可能含残留的文件。详见 XLSX 安全边界文档。
 
+PPTX 流程覆盖页面文本框、表格、组合形状、跨 run 文字、演讲者备注、现代
+批注和回复、隐藏页、幻灯片母版、版式、SmartArt 文字和 PNG/JPEG 嵌入
+图片。替换直接发生在相交的 `a:t` 节点中，保留页面结构和 run 样式：
+
+```bash
+cargo run -p llamask -- scan-pptx sample.pptx \
+  --task pptx-task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- export-pptx pptx-task.json \
+  --output sample_已脱敏.pptx \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- verify-pptx pptx-task.json sample_已脱敏.pptx \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+导出会中性化批注作者和时间、清理绘图描述与自定义数据，并把外部超链接
+改为 `about:blank`。图表/缓存、嵌入工作簿、外部数据、宏、ActiveX、3D
+模型、音视频和非 PNG/JPEG 媒体当前会安全阻断。详见 PPTX 安全边界文档。
+
 生成和验证策略：
 
 ```bash
@@ -202,6 +223,6 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 路径相对冻结批量评测仍存在语义漂移，所以两者暂时都以未校准结果进入
 复核。图片轻量组合当前只接入 OCR、规则和 SiameseUIE；Qwen 要等持久模型
 进程完成后再进入图片默认链路。仓库内的 mock sidecar 只用于协议测试。
-图形界面、PPTX 和 PDF 适配器仍属于后续纵向切片。DOCX/XLSX 的下一个
-发布门槛是双平台 Microsoft Office/LibreOffice 真实文件回归，以及继续
+图形界面和 PDF 适配器仍属于后续纵向切片。Office 适配器的下一个发布门槛
+是双平台 Microsoft Office/LibreOffice/Keynote 真实文件回归，以及继续
 扩展 PNG/JPEG 之外的安全媒体支持。
