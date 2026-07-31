@@ -27,6 +27,9 @@ evaluation/
     ├── generate_visual_ocr_dataset.py
     ├── generate_visual_ocr_hard_dataset.py
     ├── generate_docx_fixture.py
+    ├── generate_xlsx_fixture.mjs
+    ├── prepare_xlsx_fixture.py
+    ├── inspect_xlsx_fixture.mjs
     ├── validate_dataset.py
     ├── run_rules_baseline.py
     ├── run_ocr_benchmark.py
@@ -95,6 +98,22 @@ python3 evaluation/scripts/generate_docx_fixture.py \
 
 样本包含跨 run、表格、页眉页脚、脚注、批注、修订删除、字段代码和隐私
 元数据。它不含真实个人或组织信息。
+
+XLSX 合成回归样本分两步构建：先用工作簿引擎生成可正常打开的基础文件，
+再确定性加入共享字符串、传统批注、页眉和隐藏工作表等 OOXML 边界情况。
+最后用同一工作簿引擎重新导入、检查公式并渲染预览：
+
+```bash
+node evaluation/scripts/generate_xlsx_fixture.mjs /tmp/llamask-xlsx-base.xlsx
+python3 evaluation/scripts/prepare_xlsx_fixture.py \
+  /tmp/llamask-xlsx-base.xlsx fixtures/xlsx/comprehensive.xlsx
+node evaluation/scripts/inspect_xlsx_fixture.mjs \
+  fixtures/xlsx/comprehensive.xlsx /tmp/llamask-xlsx-preview.png
+```
+
+这三个 JavaScript 脚本需要开发环境中的 `@oai/artifact-tool`。提交的
+`fixtures/xlsx/comprehensive.xlsx` 不依赖该工具即可运行 Rust 回归测试，
+且只包含合成号码和邮箱。
 
 ## 数据使用限制
 
