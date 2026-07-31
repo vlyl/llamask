@@ -8,14 +8,14 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use clap::{Parser, Subcommand};
 use llamask_core::{
-    DocxTaskDraft, ImageTaskDraft, PolicyConfig, PptxTaskDraft, RuntimeRegistry, TaskDraft,
-    XlsxTaskDraft, export_docx_task_with_runtimes, export_image_task_with_runtimes,
-    export_pptx_task_with_runtimes, export_task_with_runtimes, export_xlsx_task_with_runtimes,
-    render_task_with_runtimes, scan_docx_with_policy_and_images, scan_image_with_policy,
-    scan_path_with_policy, scan_pptx_with_policy_and_images, scan_text_with_policy,
-    scan_xlsx_with_policy, verify_docx_file_with_runtimes, verify_file_with_runtimes,
-    verify_image_file_with_runtimes, verify_pptx_file_with_runtimes,
-    verify_xlsx_file_with_runtimes,
+    DocxTaskDraft, ImageTaskDraft, PdfTaskDraft, PolicyConfig, PptxTaskDraft, RuntimeRegistry,
+    TaskDraft, XlsxTaskDraft, export_docx_task_with_runtimes, export_image_task_with_runtimes,
+    export_pdf_task_with_runtimes, export_pptx_task_with_runtimes, export_task_with_runtimes,
+    export_xlsx_task_with_runtimes, render_task_with_runtimes, scan_docx_with_policy_and_images,
+    scan_image_with_policy, scan_path_with_policy, scan_pdf_with_policy,
+    scan_pptx_with_policy_and_images, scan_text_with_policy, scan_xlsx_with_policy,
+    verify_docx_file_with_runtimes, verify_file_with_runtimes, verify_image_file_with_runtimes,
+    verify_pdf_file_with_runtimes, verify_pptx_file_with_runtimes, verify_xlsx_file_with_runtimes,
 };
 
 const MAX_STDIN_BYTES: usize = 2 * 1024 * 1024;
@@ -103,6 +103,20 @@ enum Command {
         #[arg(long, default_value = "pp_ocr_small")]
         ocr_runtime: String,
     },
+    /// 安全扫描 PDF：固定 DPI 栅格化每一页并生成可编辑遮罩任务
+    ScanPdf {
+        input: PathBuf,
+        #[arg(short, long)]
+        task: PathBuf,
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// 包含 OCR 以及可选文本模型的本地运行注册表
+        #[arg(long)]
+        runtimes: PathBuf,
+        /// 注册表中的 OCR 运行项 id
+        #[arg(long, default_value = "pp_ocr_small")]
+        ocr_runtime: String,
+    },
     /// 按任务草稿生成脱敏副本；不会覆盖原件或已有文件
     Export {
         task: PathBuf,
@@ -144,6 +158,14 @@ enum Command {
         #[arg(long)]
         runtimes: Option<PathBuf>,
     },
+    /// 把全部页面重绘为图像，生成不含表单、批注、附件、脚本和元数据的新 PDF
+    ExportPdf {
+        task: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(long)]
+        runtimes: PathBuf,
+    },
     /// 对已有副本重新运行规则和可选本地模型
     Verify {
         task: PathBuf,
@@ -178,6 +200,13 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         runtimes: Option<PathBuf>,
+    },
+    /// 对 PDF 副本执行安全结构检查和逐页 OCR 独立复扫
+    VerifyPdf {
+        task: PathBuf,
+        file: PathBuf,
+        #[arg(long)]
+        runtimes: PathBuf,
     },
     /// 把任务中的脱敏文本写到标准输出，适合复制回剪贴板
     Render {
@@ -230,6 +259,10 @@ fn read_xlsx_task(path: &Path) -> Result<XlsxTaskDraft, Box<dyn std::error::Erro
 }
 
 fn read_pptx_task(path: &Path) -> Result<PptxTaskDraft, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+fn read_pdf_task(path: &Path) -> Result<PdfTaskDraft, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
@@ -565,6 +598,64 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Command::ScanPdf {
+            input,
+            task,
+            policy,
+            runtimes,
+            ocr_runtime,
+        } => {
+            let policy = match policy {
+                Some(path) => read_policy(&path)?,
+                None => PolicyConfig::default(),
+            };
+            let runtimes = RuntimeRegistry::from_path(&runtimes)?;
+            let draft = scan_pdf_with_policy(&input, &policy, &runtimes, &ocr_runtime)?;
+            let bytes = serde_json::to_vec_pretty(&draft)?;
+            write_new(&task, &bytes)?;
+            let logical_findings = draft
+                .pages
+                .iter()
+                .flat_map(|page| {
+                    page.task
+                        .findings
+                        .iter()
+                        .map(move |finding| (page.page_number, &finding.group_id))
+                })
+                .collect::<BTreeSet<_>>()
+                .len();
+            let unreviewed = draft
+                .pages
+                .iter()
+                .flat_map(|page| {
+                    page.task
+                        .findings
+                        .iter()
+                        .filter(|finding| !finding.reviewed)
+                        .map(move |finding| (page.page_number, &finding.group_id))
+                })
+                .collect::<BTreeSet<_>>()
+                .len();
+            println!(
+                "PDF 扫描完成：{} 页、{} 个逻辑命中、{} 个遮罩矩形，{} 个待复核；任务草稿包含 OCR 敏感原文，请妥善保管。\n{}",
+                draft.pages.len(),
+                logical_findings,
+                draft
+                    .pages
+                    .iter()
+                    .map(|page| page.task.findings.len())
+                    .sum::<usize>(),
+                unreviewed,
+                task.display()
+            );
+            for diagnostic in &draft.diagnostics {
+                eprintln!(
+                    "提示 [{}] {}",
+                    diagnostic.detector_id.as_deref().unwrap_or("pdf-core"),
+                    diagnostic.message
+                );
+            }
+        }
         Command::Export {
             task,
             output,
@@ -613,6 +704,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let draft = read_pptx_task(&task)?;
             let runtimes = read_runtimes(runtimes.as_deref())?;
             let report = export_pptx_task_with_runtimes(&draft, &output, runtimes.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::ExportPdf {
+            task,
+            output,
+            runtimes,
+        } => {
+            let draft = read_pdf_task(&task)?;
+            let runtimes = RuntimeRegistry::from_path(&runtimes)?;
+            let report = export_pdf_task_with_runtimes(&draft, &output, &runtimes)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Verify {
@@ -675,6 +776,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let draft = read_pptx_task(&task)?;
             let runtimes = read_runtimes(runtimes.as_deref())?;
             let report = verify_pptx_file_with_runtimes(&draft, &file, runtimes.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.passed {
+                std::process::exit(2);
+            }
+        }
+        Command::VerifyPdf {
+            task,
+            file,
+            runtimes,
+        } => {
+            let draft = read_pdf_task(&task)?;
+            let runtimes = RuntimeRegistry::from_path(&runtimes)?;
+            let report = verify_pdf_file_with_runtimes(&draft, &file, &runtimes)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             if !report.passed {
                 std::process::exit(2);
