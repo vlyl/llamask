@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llamask.local/schemas/ocr-sidecar-request.schema.json",
+  "title": "Llamask OCR sidecar request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "detector_id",
+    "image_path",
+    "expected_sha256"
+  ],
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "detector_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "image_path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "expected_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "request_id": "request-qwen-real-smoke",
+  "detector_id": "qwen_review",
+  "document_id": "document-qwen-real-smoke",
+  "part_id": "part-0001",
+  "offset_unit": "unicode_scalar",
+  "text": "客户星海科技有限公司的联系人邮箱为 case@example.com。\n",
+  "candidates": [
+    {
+      "start": 18,
+      "end": 34,
+      "entity_type": "EMAIL",
+      "matched_text": "case@example.com",
+      "detector": "deterministic_rules_v1",
+      "confidence": 1.0
+    }
+  ]
+}

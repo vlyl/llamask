@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "detectors": [
+    {
+      "id": "pp_ocr_small",
+      "kind": "ocr",
+      "executable": "../../.venv/bin/python",
+      "working_directory": "../..",
+      "args": [
+        "sidecars/ocr_onnx/main.py",
+        "--tier",
+        "small",
+        "--detector-model",
+        "evaluation/models/cache/pp-ocrv6-small-det-onnx",
+        "--recognizer-model",
+        "evaluation/models/cache/pp-ocrv6-small-rec-onnx"
+      ],
+      "assets": [
+        {
+          "path": "../../.venv/bin/python",
+          "sha256": "f1c4ad59c4adf1e5dfb5e9f558f7b95e4d7a62387d4bb4572fcf84f42648fee3"
+        },
+        {
+          "path": "../../sidecars/ocr_onnx/main.py",
+          "sha256": "06cf83ae56323f6097087b2640eea34885a3f8e1953fd5cbfe5e28a9d5f77b27"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-det-onnx/inference.onnx",
+          "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-det-onnx/inference.json",
+          "sha256": "89240f689a4a77aad75ef55a8df0a15c8e1d4980a327d17e58f24bbadde5aeab"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-det-onnx/inference.yml",
+          "sha256": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-rec-onnx/inference.onnx",
+          "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-rec-onnx/inference.json",
+          "sha256": "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-rec-onnx/inference.yml",
+          "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+        }
+      ],
+      "timeout_ms": 120000
+    }
+  ]
+}

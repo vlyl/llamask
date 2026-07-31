@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "request_id": "task-c6064a2c52ef-qwen_review",
+  "detector_id": "qwen_review",
+  "document_id": "c6064a2c52ef952224e75bcb02566762d9f24454bff54e920b19600f2bd056ec",
+  "part_id": "part-0001",
+  "offset_unit": "unicode_scalar",
+  "text": "Owner: 叶景行；Project code: 墨石-2026-12；Status: INTERNAL ONLY\n",
+  "candidates": []
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llamask.local/schemas/ocr-sidecar-response.schema.json",
+  "title": "Llamask OCR sidecar response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "source_sha256",
+    "width",
+    "height",
+    "lines",
+    "warnings"
+  ],
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "source_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "width": { "type": "integer", "minimum": 1, "maximum": 20000 },
+    "height": { "type": "integer", "minimum": 1, "maximum": 20000 },
+    "lines": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "score", "bbox", "polygon"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "score": { "type": "number", "minimum": 0, "maximum": 1 },
+          "bbox": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": { "type": "integer", "minimum": 0, "maximum": 20000 }
+          },
+          "polygon": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 32,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "integer", "minimum": 0, "maximum": 20000 }
+            }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "type": "string", "maxLength": 256 }
+    }
+  }
+}

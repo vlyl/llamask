@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llamask.local/schemas/evaluation-case-v1.json",
+  "title": "LlaMask evaluation case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "split",
+    "language",
+    "text",
+    "entities",
+    "tags",
+    "difficulty",
+    "policy"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]+$"
+    },
+    "split": {
+      "enum": ["dev", "test"]
+    },
+    "language": {
+      "enum": ["zh-CN", "zh-TW", "mixed"]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start", "end", "label", "text"],
+        "properties": {
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "label": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]+$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "difficulty": {
+      "enum": ["easy", "normal", "hard"]
+    },
+    "policy": {
+      "type": "string"
+    }
+  }
+}

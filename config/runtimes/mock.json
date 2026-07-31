@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "detectors": [
+    {
+      "id": "siamese_uie",
+      "kind": "information_extraction",
+      "executable": "../../target/debug/examples/mock_sidecar",
+      "working_directory": "../..",
+      "args": [],
+      "timeout_ms": 5000
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "detectors": [
+    {
+      "id": "siamese_uie",
+      "kind": "information_extraction",
+      "executable": "../../.venv-siamese-onnx/bin/python",
+      "working_directory": "../..",
+      "args": [
+        "sidecars/siamese_uie_onnx/main.py",
+        "--model",
+        "evaluation/models/cache/siamese-uie-chinese-base-onnx/model.onnx",
+        "--vocab",
+        "evaluation/models/cache/siamese-uie-chinese-base/vocab.txt",
+        "--operational-confidence",
+        "0.85"
+      ],
+      "assets": [
+        {
+          "path": "../../.venv-siamese-onnx/bin/python",
+          "sha256": "f1c4ad59c4adf1e5dfb5e9f558f7b95e4d7a62387d4bb4572fcf84f42648fee3"
+        },
+        {
+          "path": "../../sidecars/siamese_uie/main.py",
+          "sha256": "64b00c25f3c3996098d472fc8cd14fe7e697bc47938f0a21a59a0fd49c1d9eda"
+        },
+        {
+          "path": "../../sidecars/siamese_uie_onnx/main.py",
+          "sha256": "67d474d0cd6b96f3173fe0ae423974f9921a3f22601f7017fe6d0dff6d5fd7df"
+        },
+        {
+          "path": "../../sidecars/siamese_uie_onnx/engine.py",
+          "sha256": "9c4cda70e6689364fb7fedd93fecbeded82fc35321c9560897afdff3bc6165ae"
+        },
+        {
+          "path": "../../evaluation/models/cache/siamese-uie-chinese-base-onnx/model.onnx",
+          "sha256": "7606ed777399ebaba2227ff009777758003be88674282e5c40b36ec40bcf2097"
+        },
+        {
+          "path": "../../evaluation/models/cache/siamese-uie-chinese-base/vocab.txt",
+          "sha256": "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c"
+        }
+      ],
+      "timeout_ms": 120000
+    }
+  ]
+}

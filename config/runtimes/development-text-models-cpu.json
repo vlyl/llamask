@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "detectors": [
+    {
+      "id": "siamese_uie",
+      "kind": "information_extraction",
+      "executable": "../../.venv-siamese-onnx/bin/python",
+      "working_directory": "../..",
+      "args": [
+        "sidecars/siamese_uie_onnx/main.py",
+        "--model",
+        "evaluation/models/cache/siamese-uie-chinese-base-onnx/model.onnx",
+        "--vocab",
+        "evaluation/models/cache/siamese-uie-chinese-base/vocab.txt",
+        "--operational-confidence",
+        "0.85"
+      ],
+      "assets": [
+        {
+          "path": "../../.venv-siamese-onnx/bin/python",
+          "sha256": "f1c4ad59c4adf1e5dfb5e9f558f7b95e4d7a62387d4bb4572fcf84f42648fee3"
+        },
+        {
+          "path": "../../sidecars/siamese_uie/main.py",
+          "sha256": "64b00c25f3c3996098d472fc8cd14fe7e697bc47938f0a21a59a0fd49c1d9eda"
+        },
+        {
+          "path": "../../sidecars/siamese_uie_onnx/main.py",
+          "sha256": "67d474d0cd6b96f3173fe0ae423974f9921a3f22601f7017fe6d0dff6d5fd7df"
+        },
+        {
+          "path": "../../sidecars/siamese_uie_onnx/engine.py",
+          "sha256": "9c4cda70e6689364fb7fedd93fecbeded82fc35321c9560897afdff3bc6165ae"
+        },
+        {
+          "path": "../../evaluation/models/cache/siamese-uie-chinese-base-onnx/model.onnx",
+          "sha256": "7606ed777399ebaba2227ff009777758003be88674282e5c40b36ec40bcf2097"
+        },
+        {
+          "path": "../../evaluation/models/cache/siamese-uie-chinese-base/vocab.txt",
+          "sha256": "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c"
+        }
+      ],
+      "timeout_ms": 120000
+    },
+    {
+      "id": "qwen_review",
+      "kind": "llm_review",
+      "executable": "../../.venv/bin/python",
+      "working_directory": "../..",
+      "args": [
+        "sidecars/qwen_review/main.py",
+        "--runner",
+        "evaluation/vendor/llama.cpp/build/bin/llama-completion",
+        "--model",
+        "evaluation/models/cache/qwen3.5-4b-gguf/qwen3.5-4b-q4_k_m.gguf",
+        "--schema",
+        "sidecars/qwen_review/extraction.schema.json",
+        "--system-prompt",
+        "sidecars/qwen_review/system-prompt.txt",
+        "--device",
+        "cpu",
+        "--operational-confidence",
+        "0.80"
+      ],
+      "assets": [
+        {
+          "path": "../../.venv/bin/python",
+          "sha256": "f1c4ad59c4adf1e5dfb5e9f558f7b95e4d7a62387d4bb4572fcf84f42648fee3"
+        },
+        {
+          "path": "../../evaluation/vendor/llama.cpp/build/bin/llama-completion",
+          "sha256": "e968bc715453de80dae355918c2e9e83b1c399a231009f1e263b8737fbfa99b4"
+        },
+        {
+          "path": "../../evaluation/models/cache/qwen3.5-4b-gguf/qwen3.5-4b-q4_k_m.gguf",
+          "sha256": "cd083c9ab9093c887bbf1f5b5f010b6899596555d4e5cf507a6bdc263030f534"
+        },
+        {
+          "path": "../../sidecars/qwen_review/main.py",
+          "sha256": "39355732bccf2ceb61f315b653a4ecbda16cb00d4d764c10eacb6b29d99b929d"
+        },
+        {
+          "path": "../../sidecars/qwen_review/system-prompt.txt",
+          "sha256": "6c126ba4dd1d7de4d87d3db20b298bd22fbcf31b57ceedcadc93f8e71fb35eee"
+        },
+        {
+          "path": "../../sidecars/qwen_review/extraction.schema.json",
+          "sha256": "6e183879a6e990af37a0630d8399c212a63b6aff9fedf4577f5d43215b4b4899"
+        }
+      ],
+      "timeout_ms": 180000
+    }
+  ]
+}

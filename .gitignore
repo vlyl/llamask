@@ -1,0 +1,21 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+/target/
+.venv/
+.venv-siamese/
+.venv-siamese-onnx/
+evaluation/.uv-cache/
+evaluation/datasets/generated/
+evaluation/models/cache/
+evaluation/runs/
+evaluation/vendor/
+*.pyc
+*.log
+__pycache__/
+
+# 脱敏任务草稿包含敏感原文；根目录中的临时任务和导出报告不入库。
+/task.json
+/*-task.json
+/verification-report.json

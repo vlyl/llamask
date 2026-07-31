@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llamask.local/schemas/sidecar-response.schema.json",
+  "title": "LlaMask sidecar response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "request_id", "findings"],
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "request_id": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "entity_type": {
+      "enum": [
+        "PERSON_NAME",
+        "ORG_NAME",
+        "ADDRESS",
+        "PHONE_NUMBER",
+        "EMAIL",
+        "CN_ID_NUMBER",
+        "BANK_CARD_NUMBER",
+        "FINANCIAL_AMOUNT",
+        "SALARY_AMOUNT",
+        "BUSINESS_METRIC",
+        "PROJECT_CODE",
+        "CONTRACT_ID",
+        "CUSTOMER_NAME"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "entity_type",
+        "matched_text",
+        "confidence",
+        "reason_code"
+      ],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 1 },
+        "entity_type": { "$ref": "#/$defs/entity_type" },
+        "matched_text": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reason_code": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "detectors": [
+    {
+      "id": "pp_ocr_small",
+      "kind": "ocr",
+      "executable": "../../.venv/bin/python",
+      "working_directory": "../..",
+      "args": [
+        "sidecars/ocr_onnx/main.py",
+        "--tier",
+        "small",
+        "--detector-model",
+        "evaluation/models/cache/pp-ocrv6-small-det-onnx",
+        "--recognizer-model",
+        "evaluation/models/cache/pp-ocrv6-small-rec-onnx"
+      ],
+      "assets": [
+        {
+          "path": "../../.venv/bin/python",
+          "sha256": "f1c4ad59c4adf1e5dfb5e9f558f7b95e4d7a62387d4bb4572fcf84f42648fee3"
+        },
+        {
+          "path": "../../sidecars/ocr_onnx/main.py",
+          "sha256": "06cf83ae56323f6097087b2640eea34885a3f8e1953fd5cbfe5e28a9d5f77b27"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-det-onnx/inference.onnx",
+          "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-det-onnx/inference.json",
+          "sha256": "89240f689a4a77aad75ef55a8df0a15c8e1d4980a327d17e58f24bbadde5aeab"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-det-onnx/inference.yml",
+          "sha256": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-rec-onnx/inference.onnx",
+          "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-rec-onnx/inference.json",
+          "sha256": "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6"
+        },
+        {
+          "path": "../../evaluation/models/cache/pp-ocrv6-small-rec-onnx/inference.yml",
+          "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+        }
+      ],
+      "timeout_ms": 120000
+    },
+    {
+      "id": "siamese_uie",
+      "kind": "information_extraction",
+      "executable": "../../.venv-siamese-onnx/bin/python",
+      "working_directory": "../..",
+      "args": [
+        "sidecars/siamese_uie_onnx/main.py",
+        "--model",
+        "evaluation/models/cache/siamese-uie-chinese-base-onnx/model.onnx",
+        "--vocab",
+        "evaluation/models/cache/siamese-uie-chinese-base/vocab.txt",
+        "--operational-confidence",
+        "0.85"
+      ],
+      "assets": [
+        {
+          "path": "../../.venv-siamese-onnx/bin/python",
+          "sha256": "f1c4ad59c4adf1e5dfb5e9f558f7b95e4d7a62387d4bb4572fcf84f42648fee3"
+        },
+        {
+          "path": "../../sidecars/siamese_uie/main.py",
+          "sha256": "64b00c25f3c3996098d472fc8cd14fe7e697bc47938f0a21a59a0fd49c1d9eda"
+        },
+        {
+          "path": "../../sidecars/siamese_uie_onnx/main.py",
+          "sha256": "67d474d0cd6b96f3173fe0ae423974f9921a3f22601f7017fe6d0dff6d5fd7df"
+        },
+        {
+          "path": "../../sidecars/siamese_uie_onnx/engine.py",
+          "sha256": "9c4cda70e6689364fb7fedd93fecbeded82fc35321c9560897afdff3bc6165ae"
+        },
+        {
+          "path": "../../evaluation/models/cache/siamese-uie-chinese-base-onnx/model.onnx",
+          "sha256": "7606ed777399ebaba2227ff009777758003be88674282e5c40b36ec40bcf2097"
+        },
+        {
+          "path": "../../evaluation/models/cache/siamese-uie-chinese-base/vocab.txt",
+          "sha256": "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c"
+        }
+      ],
+      "timeout_ms": 120000
+    }
+  ]
+}

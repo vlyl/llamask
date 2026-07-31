@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "entities"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["text", "label"],
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "label": {
+                  "enum": [
+                    "PERSON_NAME",
+                    "ORG_NAME",
+                    "ADDRESS",
+                    "PHONE_NUMBER",
+                    "EMAIL",
+                    "CN_ID_NUMBER",
+                    "BANK_CARD_NUMBER",
+                    "FINANCIAL_AMOUNT",
+                    "SALARY_AMOUNT",
+                    "BUSINESS_METRIC",
+                    "PROJECT_CODE",
+                    "CONTRACT_ID",
+                    "CUSTOMER_NAME"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

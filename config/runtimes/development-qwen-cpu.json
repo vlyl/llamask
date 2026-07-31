@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "detectors": [
+    {
+      "id": "qwen_review",
+      "kind": "llm_review",
+      "executable": "../../.venv/bin/python",
+      "working_directory": "../..",
+      "args": [
+        "sidecars/qwen_review/main.py",
+        "--runner",
+        "evaluation/vendor/llama.cpp/build/bin/llama-completion",
+        "--model",
+        "evaluation/models/cache/qwen3.5-4b-gguf/qwen3.5-4b-q4_k_m.gguf",
+        "--schema",
+        "sidecars/qwen_review/extraction.schema.json",
+        "--system-prompt",
+        "sidecars/qwen_review/system-prompt.txt",
+        "--device",
+        "cpu",
+        "--operational-confidence",
+        "0.80"
+      ],
+      "assets": [
+        {
+          "path": "../../.venv/bin/python",
+          "sha256": "f1c4ad59c4adf1e5dfb5e9f558f7b95e4d7a62387d4bb4572fcf84f42648fee3"
+        },
+        {
+          "path": "../../evaluation/vendor/llama.cpp/build/bin/llama-completion",
+          "sha256": "e968bc715453de80dae355918c2e9e83b1c399a231009f1e263b8737fbfa99b4"
+        },
+        {
+          "path": "../../evaluation/models/cache/qwen3.5-4b-gguf/qwen3.5-4b-q4_k_m.gguf",
+          "sha256": "cd083c9ab9093c887bbf1f5b5f010b6899596555d4e5cf507a6bdc263030f534"
+        },
+        {
+          "path": "../../sidecars/qwen_review/main.py",
+          "sha256": "39355732bccf2ceb61f315b653a4ecbda16cb00d4d764c10eacb6b29d99b929d"
+        },
+        {
+          "path": "../../sidecars/qwen_review/system-prompt.txt",
+          "sha256": "6c126ba4dd1d7de4d87d3db20b298bd22fbcf31b57ceedcadc93f8e71fb35eee"
+        },
+        {
+          "path": "../../sidecars/qwen_review/extraction.schema.json",
+          "sha256": "6e183879a6e990af37a0630d8399c212a63b6aff9fedf4577f5d43215b4b4899"
+        }
+      ],
+      "timeout_ms": 180000
+    }
+  ]
+}

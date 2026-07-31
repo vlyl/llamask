@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "id": "default-high-recall",
+  "auto_apply_min_confidence": 0.9,
+  "scan_markdown_code": true,
+  "entities": {
+    "PERSON_NAME": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[姓名]"
+    },
+    "ORG_NAME": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[机构]"
+    },
+    "ADDRESS": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[地址]"
+    },
+    "PHONE_NUMBER": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[手机号]"
+    },
+    "EMAIL": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[邮箱]"
+    },
+    "CN_ID_NUMBER": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[身份证号]"
+    },
+    "BANK_CARD_NUMBER": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[银行卡号]"
+    },
+    "FINANCIAL_AMOUNT": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[财务金额]"
+    },
+    "SALARY_AMOUNT": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[薪酬金额]"
+    },
+    "BUSINESS_METRIC": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[业务指标]"
+    },
+    "PROJECT_CODE": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[项目代号]"
+    },
+    "CONTRACT_ID": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[合同编号]"
+    },
+    "CUSTOMER_NAME": {
+      "enabled": true,
+      "auto_apply": true,
+      "replacement": "[客户名称]"
+    }
+  },
+  "detectors": [
+    {
+      "id": "siamese_uie",
+      "enabled": true,
+      "required": false,
+      "priority": 50,
+      "min_confidence": 0.65
+    },
+    {
+      "id": "qwen_review",
+      "enabled": true,
+      "required": false,
+      "priority": 30,
+      "min_confidence": 0.7
+    }
+  ],
+  "exact_terms": [],
+  "allowlist": [],
+  "image_mask": {
+    "safety_margin_px": 4,
+    "solid_rgb": [0, 0, 0],
+    "auto_apply_min_ocr_confidence": 0.9
+  },
+  "replacement_mapping": {
+    "scope": "task",
+    "reversible": false,
+    "key_reference": null
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "captured_at": "2026-07-31",
+  "purpose": "correctness, peak-memory and Apple-Silicon compatibility baseline",
+  "host": {
+    "os": "macOS",
+    "architecture": "arm64",
+    "chip": "Apple M5 Max",
+    "cpu_cores": 18,
+    "memory_gb": 128,
+    "representative_of_16gb_user_device": false
+  },
+  "python": "3.12.13",
+  "frameworks": {
+    "torch": "2.13.0",
+    "transformers": "5.14.1",
+    "onnxruntime": "1.28.0",
+    "modelscope": "1.39.0",
+    "huggingface_hub": "1.26.0"
+  },
+  "siamese_uie_environment": {
+    "export_environment": {
+      "python": "3.12.13",
+      "torch": "2.13.0",
+      "transformers": "4.48.3",
+      "modelscope": "1.39.0",
+      "huggingface_hub": "0.25.2"
+    },
+    "onnx_runtime": {
+      "onnxruntime": "1.28.0",
+      "numpy": "2.5.1",
+      "tokenizers": "0.22.2",
+      "site_packages_size_mib": 104,
+      "portable_python_size_mib": 72,
+      "model_bytes": 407056303,
+      "mean_runtime_ms_test1440": 12.698941640479056,
+      "peak_rss_gib_test1440": 0.7320556640625,
+      "model_load_ms_test1440": 173.885958007304,
+      "pytorch_mean_runtime_ms_frozen360": 24.538865884339128,
+      "pytorch_peak_rss_gib_frozen360": 1.040618896484375
+    },
+    "production_requirement": "Validate and sign a portable runtime on Windows x64 and Apple Silicon.",
+    "development_sidecar": {
+      "protocol_version": 1,
+      "runtime_registry": "config/runtimes/development-siamese.json",
+      "backend": "onnxruntime-cpu-fp32",
+      "frozen_test_predictions_identical": 360,
+      "operational_confidence": 0.85,
+      "default_auto_apply": false
+    }
+  },
+  "accelerators": {
+    "torch_mps_available_in_current_environment": false,
+    "llama_cpp_metal": true
+  },
+  "llama_cpp": {
+    "revision": "47f686f53f2a20fe82d87d79fa5c835714ee8f46",
+    "build_type": "Release",
+    "curl_enabled": false,
+    "development_sidecar": {
+      "transport": "stdin_stdout",
+      "runner": "llama-completion",
+      "local_port": false,
+      "operational_confidence": 0.8,
+      "default_auto_apply": false,
+      "single_record_test6": {
+        "precision": 0.75,
+        "recall": 0.6,
+        "f1": 0.6666666666666665
+      },
+      "frozen_batch6_same_records": {
+        "precision": 1.0,
+        "recall": 0.7,
+        "f1": 0.8235294117647058
+      },
+      "release_equivalent": false
+    }
+  },
+  "limitations": [
+    "This host has substantially more memory than the 16GB release target.",
+    "Latency results must be repeated on representative 16GB Windows and macOS devices.",
+    "PyTorch MPS is unavailable in the current managed environment, so PyTorch models run on CPU."
+  ]
+}

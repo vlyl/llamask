@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "request_id": "request-qwen-strong-smoke",
+  "detector_id": "qwen_review",
+  "document_id": "document-qwen-strong-smoke",
+  "part_id": "part-0001",
+  "offset_unit": "unicode_scalar",
+  "text": "Owner: 叶景行；Project code: 墨石-2026-12；Status: INTERNAL ONLY\n",
+  "candidates": [
+    {
+      "start": 25,
+      "end": 35,
+      "entity_type": "PROJECT_CODE",
+      "matched_text": "墨石-2026-12",
+      "detector": "deterministic_rules_v1",
+      "confidence": 1.0
+    }
+  ]
+}
