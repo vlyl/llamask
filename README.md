@@ -2,10 +2,11 @@
 
 LlaMask 是一个面向个人与组织的本地离线数据脱敏工具。它在不上传文件、不依赖云端服务的前提下，识别文本、Office 文档和图片中的敏感信息，供用户复核后生成脱敏副本。
 
-项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片和 DOCX
-文字纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG 以及 DOCX
-正文和隐藏文字部件均可执行规则和本地模型扫描，生成可编辑任务草稿、
-安全副本，并在落盘前独立复扫残留。
+项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片、DOCX 和
+XLSX 纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG、DOCX
+正文与隐藏文字部件，以及 XLSX 单元格、公式、批注、隐藏工作表和嵌入图片
+均可执行规则和本地模型扫描，生成可编辑任务草稿、安全副本，并在落盘前
+独立复扫残留。
 
 ## 核心原则
 
@@ -28,6 +29,7 @@ LlaMask 是一个面向个人与组织的本地离线数据脱敏工具。它在
 - [模型评测与首发冻结结论](docs/07-model-benchmark-results.md)
 - [策略与本地模型进程协议](docs/08-policy-and-sidecar-protocol.md)
 - [DOCX 纵向切片与安全边界](docs/09-docx-vertical-slice.md)
+- [XLSX 纵向切片与安全边界](docs/10-xlsx-vertical-slice.md)
 
 ## 当前确定的首发范围
 
@@ -128,10 +130,48 @@ cargo run -p llamask -- export-docx docx-task.json \
 cargo run -p llamask -- verify-docx docx-task.json sample_已脱敏.docx
 ```
 
-当前 DOCX 切片会安全阻断宏、ActiveX、OLE/嵌入对象和包含图片的文档；
-图片并非不支持，而是必须在下一小步真正接入现有 OCR/打码/复扫管线后才能
-放行，避免只处理图片外的文字便误报成功。验证报告不包含残留原值；
+DOCX 中的 PNG/JPEG 嵌入图片已经递归接入现有图片管线。扫描时提供含 OCR
+运行项的注册表，任务草稿会在 `embedded_images` 中保存逐图可编辑的遮罩
+子任务；导出时逐图去元数据重编码、替换 `word/media`，并对候选 DOCX 中
+的每张图片再次 OCR 复扫：
+
+```bash
+cargo run -p llamask -- scan-docx sample.docx \
+  --task docx-task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+cargo run -p llamask -- export-docx docx-task.json \
+  --output sample_已脱敏.docx \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+未提供 OCR 运行配置时仍可取得文字扫描草稿，但含图片文档会在导出时安全
+阻断并要求重新扫描。GIF、TIFF、SVG 等尚未支持的媒体格式，以及宏、
+ActiveX、OLE/嵌入对象仍会阻断。验证报告不包含残留原值；
 `complete: false` 表示策略启用的可选本地模型没有全部参与复扫。
+
+XLSX 流程覆盖普通字符串、共享字符串、内联字符串、数字单元格、公式及
+缓存值、传统批注、页眉页脚、隐藏行列/工作表、定义名称、DrawingML 文字
+和 PNG/JPEG 嵌入图片。公式中的命中默认强制人工复核；确认处理后会删除
+公式并把整个单元格替换为普通文本，避免敏感字面量藏在公式或缓存中：
+
+```bash
+cargo run -p llamask -- scan-xlsx sample.xlsx \
+  --task xlsx-task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- export-xlsx xlsx-task.json \
+  --output sample_已脱敏.xlsx \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- verify-xlsx xlsx-task.json sample_已脱敏.xlsx \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+选中的共享字符串单元格会转成保留原样式的内联字符串，失去引用的共享
+字符串原值会清空；批注作者和 Office/ZIP 隐私元数据也会清理。工作表名称
+暂不自动改名，命中后必须明确复核为保留。图表、透视缓存、外部数据连接、
+宏、ActiveX、嵌入对象和非 PNG/JPEG 媒体目前会安全阻断，避免生成看似
+成功但仍可能含残留的文件。详见 XLSX 安全边界文档。
 
 生成和验证策略：
 
@@ -162,5 +202,6 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 路径相对冻结批量评测仍存在语义漂移，所以两者暂时都以未校准结果进入
 复核。图片轻量组合当前只接入 OCR、规则和 SiameseUIE；Qwen 要等持久模型
 进程完成后再进入图片默认链路。仓库内的 mock sidecar 只用于协议测试。
-图形界面、XLSX/PPTX 和 PDF 适配器仍属于后续纵向切片；DOCX 嵌入图片
-递归处理仍是 DOCX 发布门槛。
+图形界面、PPTX 和 PDF 适配器仍属于后续纵向切片。DOCX/XLSX 的下一个
+发布门槛是双平台 Microsoft Office/LibreOffice 真实文件回归，以及继续
+扩展 PNG/JPEG 之外的安全媒体支持。

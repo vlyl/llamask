@@ -7,15 +7,20 @@ use quick_xml::Reader;
 use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, BytesText, Event};
 use quick_xml::writer::Writer;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, tempdir};
 use thiserror::Error;
 use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
+use crate::image_workflow::{
+    ImageWorkflowError, export_image_task_with_runtimes, scan_image_with_policy,
+    verify_image_file_with_runtimes,
+};
 use crate::model::{
-    DiagnosticSeverity, DocumentPart, DocxDocumentGraph, DocxResidualFinding, DocxSourceMetadata,
-    DocxTaskDraft, DocxVerificationReport, EntityType, FileKind, Finding, TaskDiagnostic,
+    DiagnosticSeverity, DocumentPart, DocxDocumentGraph, DocxEmbeddedImageTask,
+    DocxImageResidualFinding, DocxResidualFinding, DocxSourceMetadata, DocxTaskDraft,
+    DocxVerificationReport, EntityType, FileKind, Finding, ImageTaskDraft, TaskDiagnostic,
 };
 use crate::policy::{PolicyConfig, PolicyError};
 use crate::sidecar::RuntimeRegistry;
@@ -77,6 +82,14 @@ pub enum DocxWorkflowError {
     EmbeddedObjectsUnsupported,
     #[error("DOCX 包含嵌入图片；当前文字切片尚未递归执行图片 OCR，已拒绝导出")]
     EmbeddedImagesUnsupported,
+    #[error("DOCX 嵌入图片需要 OCR 运行注册表才能扫描、导出和复核")]
+    EmbeddedImageRuntimeRequired,
+    #[error("DOCX 嵌入图片任务与源包不一致：{0}")]
+    EmbeddedImageTaskMismatch(String),
+    #[error("DOCX 包含当前不支持的嵌入图片格式：{0}")]
+    UnsupportedEmbeddedImageType(String),
+    #[error("DOCX 嵌入图片处理失败：{0}")]
+    EmbeddedImage(#[from] ImageWorkflowError),
     #[error("DOCX 包含宏、ActiveX 或其他主动内容，当前版本拒绝导出")]
     ActiveContentUnsupported,
     #[error("DOCX 包含无法安全保留的外部关系：{0}")]
@@ -87,6 +100,7 @@ pub enum DocxWorkflowError {
 struct PackageSummary {
     entry_names: Vec<String>,
     embedded_images: usize,
+    unsupported_embedded_images: Vec<String>,
     embedded_objects: usize,
     active_content: usize,
 }
@@ -116,15 +130,36 @@ pub fn scan_docx_with_policy(
     policy: &PolicyConfig,
     runtimes: Option<&RuntimeRegistry>,
 ) -> Result<DocxTaskDraft, DocxWorkflowError> {
+    scan_docx_with_policy_and_images(path, policy, runtimes, None)
+}
+
+pub fn scan_docx_with_policy_and_images(
+    path: &Path,
+    policy: &PolicyConfig,
+    runtimes: Option<&RuntimeRegistry>,
+    ocr_runtime_id: Option<&str>,
+) -> Result<DocxTaskDraft, DocxWorkflowError> {
     policy.validate()?;
     let canonical = fs::canonicalize(path)?;
     let bytes = fs::read(&canonical)?;
     let summary = validate_package(&bytes)?;
     let source_sha256 = sha256_hex(&bytes);
     let parts = extract_document_parts(&bytes, &summary.entry_names)?;
-    if parts.is_empty() {
+    if parts.is_empty() && summary.embedded_images == 0 {
         return Err(DocxWorkflowError::MissingTextContent);
     }
+
+    let embedded_images = match (runtimes, ocr_runtime_id) {
+        (Some(runtimes), Some(ocr_runtime_id)) => scan_embedded_images(
+            &bytes,
+            &summary.entry_names,
+            &canonical,
+            policy,
+            runtimes,
+            ocr_runtime_id,
+        )?,
+        _ => Vec::new(),
+    };
 
     let mut findings = Vec::new();
     let mut diagnostics = Vec::new();
@@ -154,13 +189,28 @@ pub fn scan_docx_with_policy(
     for (index, finding) in findings.iter_mut().enumerate() {
         finding.id = format!("docx-finding-{:04}", index + 1);
     }
-    if summary.embedded_images > 0 {
+    if !summary.unsupported_embedded_images.is_empty() {
+        diagnostics.push(TaskDiagnostic {
+            severity: DiagnosticSeverity::Error,
+            code: "DOCX_EMBEDDED_IMAGE_FORMAT_UNSUPPORTED".to_owned(),
+            detector_id: None,
+            message: "文档包含非 PNG/JPEG 嵌入图片；当前版本无法安全重编码和 OCR，将拒绝导出。"
+                .to_owned(),
+        });
+    }
+    if summary.embedded_images > embedded_images.len() {
         diagnostics.push(TaskDiagnostic {
             severity: DiagnosticSeverity::Warning,
             code: "DOCX_EMBEDDED_IMAGES_PENDING".to_owned(),
             detector_id: None,
-            message: "文档包含嵌入图片；本次文字扫描已完成，图片递归脱敏将在导出前单独检查。"
-                .to_owned(),
+            message: "文档包含尚未扫描的嵌入图片；请提供 OCR 运行配置后重新扫描。".to_owned(),
+        });
+    } else if !embedded_images.is_empty() {
+        diagnostics.push(TaskDiagnostic {
+            severity: DiagnosticSeverity::Info,
+            code: "DOCX_EMBEDDED_IMAGES_SCANNED".to_owned(),
+            detector_id: ocr_runtime_id.map(str::to_owned),
+            message: "嵌入图片已建立可编辑遮罩子任务；导出时会逐图打码并独立 OCR 复扫。".to_owned(),
         });
     }
     if summary.embedded_objects > 0 {
@@ -183,7 +233,7 @@ pub fn scan_docx_with_policy(
     deduplicate_diagnostics(&mut diagnostics);
 
     Ok(DocxTaskDraft {
-        schema_version: 1,
+        schema_version: 2,
         task_id: format!("docx-task-{}", &source_sha256[..12]),
         policy_id: policy.id.clone(),
         policy: policy.clone(),
@@ -200,6 +250,7 @@ pub fn scan_docx_with_policy(
             parts,
         },
         findings,
+        embedded_images,
         diagnostics,
         contains_sensitive_plaintext: true,
     })
@@ -217,6 +268,7 @@ fn validate_package(bytes: &[u8]) -> Result<PackageSummary, DocxWorkflowError> {
     let mut entry_names = Vec::with_capacity(archive.len());
     let mut total_uncompressed = 0_u64;
     let mut embedded_images = 0usize;
+    let mut unsupported_embedded_images = Vec::new();
     let mut embedded_objects = 0usize;
     let mut active_content = 0usize;
     for index in 0..archive.len() {
@@ -253,8 +305,11 @@ fn validate_package(bytes: &[u8]) -> Result<PackageSummary, DocxWorkflowError> {
         {
             return Err(DocxWorkflowError::SuspiciousCompression(name));
         }
-        if is_embedded_image(&name) {
+        if is_embedded_media(&name) && !file.is_dir() {
             embedded_images += 1;
+            if !is_supported_embedded_image(&name) {
+                unsupported_embedded_images.push(name.clone());
+            }
         }
         if name.starts_with("word/embeddings/") && !file.is_dir() {
             embedded_objects += 1;
@@ -272,9 +327,45 @@ fn validate_package(bytes: &[u8]) -> Result<PackageSummary, DocxWorkflowError> {
     Ok(PackageSummary {
         entry_names,
         embedded_images,
+        unsupported_embedded_images,
         embedded_objects,
         active_content,
     })
+}
+
+fn scan_embedded_images(
+    bytes: &[u8],
+    entry_names: &[String],
+    source_path: &Path,
+    policy: &PolicyConfig,
+    runtimes: &RuntimeRegistry,
+    ocr_runtime_id: &str,
+) -> Result<Vec<DocxEmbeddedImageTask>, DocxWorkflowError> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+    let temporary = tempdir()?;
+    let mut images = Vec::new();
+    for (index, entry_name) in entry_names
+        .iter()
+        .filter(|name| is_supported_embedded_image(name))
+        .enumerate()
+    {
+        let mut entry = archive.by_name(entry_name)?;
+        let mut image_bytes = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut image_bytes)?;
+        let extension = embedded_image_extension(entry_name)?;
+        let image_path = temporary
+            .path()
+            .join(format!("embedded-{index:05}.{extension}"));
+        fs::write(&image_path, &image_bytes)?;
+        let mut task = scan_image_with_policy(&image_path, policy, runtimes, ocr_runtime_id)?;
+        task.task_id = format!("docx-image-{}-{index:05}", &task.source.sha256[..12]);
+        task.source.path = format!("docx://{}#{entry_name}", source_path.to_string_lossy());
+        images.push(DocxEmbeddedImageTask {
+            entry_name: entry_name.clone(),
+            task,
+        });
+    }
+    Ok(images)
 }
 
 fn extract_document_parts(
@@ -437,11 +528,25 @@ fn is_text_element(name: &[u8]) -> bool {
     matches!(local_name(name), b"t" | b"delText" | b"instrText" | b"v")
 }
 
-fn is_embedded_image(name: &str) -> bool {
-    name.starts_with("word/media/")
-        && ["png", "jpg", "jpeg"]
-            .iter()
-            .any(|extension| name.to_ascii_lowercase().ends_with(extension))
+fn is_embedded_media(name: &str) -> bool {
+    name.starts_with("word/media/") && !name.ends_with('/')
+}
+
+fn is_supported_embedded_image(name: &str) -> bool {
+    is_embedded_media(name) && embedded_image_extension(name).is_ok()
+}
+
+fn embedded_image_extension(name: &str) -> Result<&'static str, DocxWorkflowError> {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("png") => Ok("png"),
+        Some("jpg" | "jpeg") => Ok("jpg"),
+        _ => Err(DocxWorkflowError::UnsupportedEmbeddedImageType(
+            name.to_owned(),
+        )),
+    }
 }
 
 fn is_active_content(name: &str) -> bool {
@@ -569,7 +674,79 @@ fn validate_docx_task(task: &DocxTaskDraft) -> Result<(), DocxWorkflowError> {
             ));
         }
     }
+    let mut image_entries = BTreeSet::new();
+    for embedded in &task.embedded_images {
+        if !is_supported_embedded_image(&embedded.entry_name)
+            || !image_entries.insert(embedded.entry_name.as_str())
+            || embedded.task.policy_id != task.policy_id
+            || embedded.task.policy != task.policy
+        {
+            return Err(DocxWorkflowError::EmbeddedImageTaskMismatch(
+                embedded.entry_name.clone(),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn image_group_count(
+    images: &[DocxEmbeddedImageTask],
+    predicate: impl Fn(&crate::model::ImageFinding) -> bool,
+) -> usize {
+    images
+        .iter()
+        .flat_map(|image| {
+            image
+                .task
+                .findings
+                .iter()
+                .filter(|finding| predicate(finding))
+                .map(move |finding| (image.entry_name.as_str(), finding.group_id.as_str()))
+        })
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn embedded_tasks_by_entry<'a>(
+    task: &'a DocxTaskDraft,
+    summary: &PackageSummary,
+) -> Result<BTreeMap<&'a str, &'a ImageTaskDraft>, DocxWorkflowError> {
+    if let Some(name) = summary.unsupported_embedded_images.first() {
+        return Err(DocxWorkflowError::UnsupportedEmbeddedImageType(
+            name.clone(),
+        ));
+    }
+    if summary.embedded_images > 0 && task.embedded_images.is_empty() {
+        return Err(DocxWorkflowError::EmbeddedImagesUnsupported);
+    }
+    if summary.embedded_images != task.embedded_images.len()
+        || task.document.source.embedded_images != summary.embedded_images
+    {
+        return Err(DocxWorkflowError::EmbeddedImageTaskMismatch(
+            "嵌入图片数量不同".to_owned(),
+        ));
+    }
+    let expected: BTreeSet<&str> = summary
+        .entry_names
+        .iter()
+        .filter(|name| is_supported_embedded_image(name))
+        .map(String::as_str)
+        .collect();
+    let actual: BTreeSet<&str> = task
+        .embedded_images
+        .iter()
+        .map(|image| image.entry_name.as_str())
+        .collect();
+    if expected != actual {
+        return Err(DocxWorkflowError::EmbeddedImageTaskMismatch(
+            "嵌入图片路径不同".to_owned(),
+        ));
+    }
+    Ok(task
+        .embedded_images
+        .iter()
+        .map(|image| (image.entry_name.as_str(), &image.task))
+        .collect())
 }
 
 fn findings_by_locator(task: &DocxTaskDraft) -> BTreeMap<String, Vec<Finding>> {
@@ -1024,17 +1201,21 @@ fn transform_package_entry(
 fn build_redacted_package(
     task: &DocxTaskDraft,
     source_bytes: &[u8],
+    runtimes: Option<&RuntimeRegistry>,
 ) -> Result<Vec<u8>, DocxWorkflowError> {
     let summary = validate_package(source_bytes)?;
-    if summary.embedded_images > 0 {
-        return Err(DocxWorkflowError::EmbeddedImagesUnsupported);
-    }
     if summary.embedded_objects > 0 {
         return Err(DocxWorkflowError::EmbeddedObjectsUnsupported);
     }
     if summary.active_content > 0 {
         return Err(DocxWorkflowError::ActiveContentUnsupported);
     }
+    let embedded_tasks = embedded_tasks_by_entry(task, &summary)?;
+    let image_runtimes = if embedded_tasks.is_empty() {
+        None
+    } else {
+        Some(runtimes.ok_or(DocxWorkflowError::EmbeddedImageRuntimeRequired)?)
+    };
     let by_locator = findings_by_locator(task);
     let mut source = ZipArchive::new(Cursor::new(source_bytes))?;
     let mut target = ZipWriter::new(Cursor::new(Vec::new()));
@@ -1047,7 +1228,16 @@ fn build_redacted_package(
         let compression = entry.compression();
         let mut data = Vec::with_capacity(entry.size() as usize);
         entry.read_to_end(&mut data)?;
-        let transformed = transform_package_entry(&name, &data, &by_locator)?;
+        let transformed = if let Some(image_task) = embedded_tasks.get(name.as_str()) {
+            redact_embedded_image(
+                &name,
+                &data,
+                image_task,
+                image_runtimes.expect("image runtimes checked above"),
+            )?
+        } else {
+            transform_package_entry(&name, &data, &by_locator)?
+        };
         let options = SimpleFileOptions::default()
             .compression_method(compression)
             .unix_permissions(0o644);
@@ -1055,6 +1245,23 @@ fn build_redacted_package(
         target.write_all(&transformed)?;
     }
     Ok(target.finish()?.into_inner())
+}
+
+fn redact_embedded_image(
+    entry_name: &str,
+    source_bytes: &[u8],
+    task: &ImageTaskDraft,
+    runtimes: &RuntimeRegistry,
+) -> Result<Vec<u8>, DocxWorkflowError> {
+    let temporary = tempdir()?;
+    let extension = embedded_image_extension(entry_name)?;
+    let input = temporary.path().join(format!("source.{extension}"));
+    let output = temporary.path().join(format!("redacted.{extension}"));
+    fs::write(&input, source_bytes)?;
+    let mut file_task = task.clone();
+    file_task.source.path = input.to_string_lossy().into_owned();
+    export_image_task_with_runtimes(&file_task, &output, runtimes)?;
+    Ok(fs::read(output)?)
 }
 
 fn xml_contains_nonempty_text(xml: &[u8], entry_name: &str) -> Result<bool, DocxWorkflowError> {
@@ -1252,7 +1459,8 @@ fn verify_docx_bytes_with_runtimes(
         .findings
         .iter()
         .filter(|finding| !finding.reviewed)
-        .count();
+        .count()
+        + image_group_count(&task.embedded_images, |finding| !finding.reviewed);
     let accepted_keep: BTreeSet<(EntityType, String)> = task
         .findings
         .iter()
@@ -1262,7 +1470,7 @@ fn verify_docx_bytes_with_runtimes(
     let mut residual_findings = Vec::new();
     let mut seen = BTreeSet::new();
     append_target_residuals(task, &output_parts, &mut residual_findings, &mut seen);
-    let target_residual_count = residual_findings.len();
+    let mut target_residual_count = residual_findings.len();
     let output_sha256 = sha256_hex(bytes);
     let mut diagnostics = Vec::new();
     let mut checked_intersection: Option<BTreeSet<String>> = None;
@@ -1304,6 +1512,60 @@ fn verify_docx_bytes_with_runtimes(
             }
         }
     }
+    let text_detectors_complete = task
+        .policy
+        .detectors
+        .iter()
+        .filter(|detector| detector.enabled)
+        .all(|detector| {
+            output_parts.is_empty()
+                || checked_intersection
+                    .as_ref()
+                    .is_some_and(|checked| checked.contains(&detector.id))
+        });
+
+    let embedded_tasks = embedded_tasks_by_entry(task, &summary)?;
+    let image_runtimes = if embedded_tasks.is_empty() {
+        None
+    } else {
+        Some(runtimes.ok_or(DocxWorkflowError::EmbeddedImageRuntimeRequired)?)
+    };
+    let mut image_residual_findings = Vec::new();
+    let mut embedded_images_checked = 0usize;
+    let mut embedded_images_passed = true;
+    let mut embedded_images_complete = true;
+    let mut image_detectors_checked = BTreeSet::new();
+    if let Some(image_runtimes) = image_runtimes {
+        let temporary = tempdir()?;
+        let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+        for (index, (entry_name, image_task)) in embedded_tasks.iter().enumerate() {
+            let mut entry = archive.by_name(entry_name)?;
+            let mut image_bytes = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut image_bytes)?;
+            let extension = embedded_image_extension(entry_name)?;
+            let image_path = temporary
+                .path()
+                .join(format!("verify-{index:05}.{extension}"));
+            fs::write(&image_path, image_bytes)?;
+            let report = verify_image_file_with_runtimes(image_task, &image_path, image_runtimes)?;
+            embedded_images_checked += 1;
+            embedded_images_passed &= report.passed;
+            embedded_images_complete &= report.complete;
+            target_residual_count += report.target_residual_count;
+            diagnostics.extend(report.diagnostics);
+            image_detectors_checked.extend(report.detectors_checked);
+            image_residual_findings.extend(report.residual_findings.into_iter().map(|finding| {
+                DocxImageResidualFinding {
+                    entry_name: (*entry_name).to_owned(),
+                    line_index: finding.line_index,
+                    entity_type: finding.entity_type,
+                    detector: finding.detector,
+                    explanation_code: finding.explanation_code,
+                    ocr_rect: finding.ocr_rect,
+                }
+            }));
+        }
+    }
     let metadata_scrubbed = package_metadata_is_scrubbed(bytes)?;
     if !metadata_scrubbed {
         diagnostics.push(TaskDiagnostic {
@@ -1313,12 +1575,12 @@ fn verify_docx_bytes_with_runtimes(
             message: "独立校验发现文档或 ZIP 元数据尚未完全清理。".to_owned(),
         });
     }
-    if summary.embedded_images > 0 {
+    if !embedded_images_passed {
         diagnostics.push(TaskDiagnostic {
             severity: DiagnosticSeverity::Error,
-            code: "DOCX_EMBEDDED_IMAGES_UNVERIFIED".to_owned(),
+            code: "DOCX_EMBEDDED_IMAGE_RESIDUALS".to_owned(),
             detector_id: None,
-            message: "文档包含尚未递归 OCR 复扫的嵌入图片。".to_owned(),
+            message: "独立 OCR 复扫在嵌入图片中发现未处理结果。".to_owned(),
         });
     }
     if summary.embedded_objects > 0 || summary.active_content > 0 {
@@ -1337,25 +1599,31 @@ fn verify_docx_bytes_with_runtimes(
             .then_with(|| left.end.cmp(&right.end))
             .then_with(|| left.entity_type.cmp(&right.entity_type))
     });
-    let detectors_checked: Vec<String> = checked_intersection
+    image_residual_findings.sort_by(|left, right| {
+        left.entry_name
+            .cmp(&right.entry_name)
+            .then_with(|| left.line_index.cmp(&right.line_index))
+            .then_with(|| left.entity_type.cmp(&right.entity_type))
+    });
+    let mut detectors_checked: BTreeSet<String> = checked_intersection
         .unwrap_or_else(|| BTreeSet::from(["deterministic_rules_v1".to_owned()]))
         .into_iter()
         .collect();
-    let complete = task
-        .policy
-        .detectors
-        .iter()
-        .filter(|detector| detector.enabled)
-        .all(|detector| detectors_checked.contains(&detector.id))
-        && summary.embedded_images == 0
+    detectors_checked.extend(image_detectors_checked);
+    let detectors_checked: Vec<String> = detectors_checked.into_iter().collect();
+    let complete = text_detectors_complete
+        && embedded_images_complete
+        && embedded_images_checked == summary.embedded_images
         && summary.embedded_objects == 0
         && summary.active_content == 0;
     Ok(DocxVerificationReport {
-        schema_version: 1,
+        schema_version: 2,
         passed: unreviewed_findings == 0
             && residual_findings.is_empty()
+            && image_residual_findings.is_empty()
+            && embedded_images_passed
             && metadata_scrubbed
-            && summary.embedded_images == 0
+            && embedded_images_checked == summary.embedded_images
             && summary.embedded_objects == 0
             && summary.active_content == 0,
         complete,
@@ -1365,14 +1633,16 @@ fn verify_docx_bytes_with_runtimes(
             .findings
             .iter()
             .filter(|finding| finding.selected)
-            .count(),
+            .count()
+            + image_group_count(&task.embedded_images, |finding| finding.selected),
         unreviewed_findings,
         target_residual_count,
         residual_findings,
+        image_residual_findings,
         detectors_checked,
         package_entries_checked: summary.entry_names.len(),
         metadata_scrubbed,
-        embedded_images_checked: 0,
+        embedded_images_checked,
         diagnostics,
     })
 }
@@ -1396,7 +1666,8 @@ pub fn export_docx_task_with_runtimes(
         .findings
         .iter()
         .filter(|finding| !finding.reviewed)
-        .count();
+        .count()
+        + image_group_count(&task.embedded_images, |finding| !finding.reviewed);
     if unreviewed > 0 {
         return Err(DocxWorkflowError::UnreviewedFindings(unreviewed));
     }
@@ -1419,13 +1690,14 @@ pub fn export_docx_task_with_runtimes(
     if sha256_hex(&source_bytes) != task.document.source.sha256 {
         return Err(DocxWorkflowError::SourceChanged);
     }
-    let output_bytes = build_redacted_package(task, &source_bytes)?;
+    let output_bytes = build_redacted_package(task, &source_bytes, runtimes)?;
     let report =
         verify_docx_bytes_with_runtimes(task, &output_bytes, &output.to_string_lossy(), runtimes)?;
     if !report.passed {
         return Err(DocxWorkflowError::VerificationFailed(
             report.unreviewed_findings
                 + report.residual_findings.len()
+                + report.image_residual_findings.len()
                 + usize::from(!report.metadata_scrubbed),
         ));
     }
@@ -1466,8 +1738,11 @@ mod tests {
     use zip::write::SimpleFileOptions;
     use zip::{ZipArchive, ZipWriter};
 
-    use crate::model::EntityType;
+    use crate::model::{
+        DocxEmbeddedImageTask, EntityType, ImageFileKind, ImageSourceMetadata, ImageTaskDraft,
+    };
     use crate::policy::PolicyConfig;
+    use crate::text::sha256_hex;
 
     use super::{
         DocxWorkflowError, StoryEntry, XmlGrouping, export_docx_task_with_runtimes,
@@ -1622,6 +1897,111 @@ mod tests {
             Err(DocxWorkflowError::EmbeddedImagesUnsupported)
         ));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn embedded_image_task_requires_the_ocr_registry_at_export() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("with-image-task.docx");
+        let original = fs::read(fixture_path()).unwrap();
+        let mut input = ZipArchive::new(Cursor::new(&original)).unwrap();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..input.len() {
+            let mut entry = input.by_index(index).unwrap();
+            if entry.is_dir() {
+                continue;
+            }
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            writer
+                .start_file(entry.name(), SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(&data).unwrap();
+        }
+        let image_bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        writer
+            .start_file("word/media/image1.png", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&image_bytes).unwrap();
+        fs::write(&source, writer.finish().unwrap().into_inner()).unwrap();
+
+        let mut task = scan_docx_with_policy(&source, &policy_without_models(), None).unwrap();
+        task.embedded_images.push(DocxEmbeddedImageTask {
+            entry_name: "word/media/image1.png".to_owned(),
+            task: ImageTaskDraft {
+                schema_version: 1,
+                task_id: "embedded-test".to_owned(),
+                policy_id: task.policy_id.clone(),
+                policy: task.policy.clone(),
+                source: ImageSourceMetadata {
+                    path: "docx://test#word/media/image1.png".to_owned(),
+                    sha256: sha256_hex(&image_bytes),
+                    size_bytes: image_bytes.len() as u64,
+                    file_kind: ImageFileKind::Png,
+                    width: 1,
+                    height: 1,
+                },
+                ocr_runtime_id: "pp_ocr_small".to_owned(),
+                findings: Vec::new(),
+                diagnostics: Vec::new(),
+                contains_sensitive_plaintext: true,
+            },
+        });
+        let output = directory.path().join("blocked.docx");
+        assert!(matches!(
+            export_docx_task_with_runtimes(&task, &output, None),
+            Err(DocxWorkflowError::EmbeddedImageRuntimeRequired)
+        ));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn unsupported_embedded_image_format_is_never_silently_preserved() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("with-gif.docx");
+        let original = fs::read(fixture_path()).unwrap();
+        let mut input = ZipArchive::new(Cursor::new(&original)).unwrap();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..input.len() {
+            let mut entry = input.by_index(index).unwrap();
+            if entry.is_dir() {
+                continue;
+            }
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            writer
+                .start_file(entry.name(), SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(&data).unwrap();
+        }
+        writer
+            .start_file("word/media/image1.gif", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"GIF89a").unwrap();
+        fs::write(&source, writer.finish().unwrap().into_inner()).unwrap();
+
+        let task = scan_docx_with_policy(&source, &policy_without_models(), None).unwrap();
+        assert_eq!(task.document.source.embedded_images, 1);
+        assert!(
+            task.diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "DOCX_EMBEDDED_IMAGE_FORMAT_UNSUPPORTED" })
+        );
+        let output = directory.path().join("blocked.docx");
+        assert!(matches!(
+            export_docx_task_with_runtimes(&task, &output, None),
+            Err(DocxWorkflowError::UnsupportedEmbeddedImageType(_))
+        ));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn older_docx_tasks_default_to_no_embedded_image_subtasks() {
+        let task = scan_docx_with_policy(&fixture_path(), &policy_without_models(), None).unwrap();
+        let mut value = serde_json::to_value(task).unwrap();
+        value.as_object_mut().unwrap().remove("embedded_images");
+        let restored: crate::model::DocxTaskDraft = serde_json::from_value(value).unwrap();
+        assert!(restored.embedded_images.is_empty());
     }
 
     #[test]

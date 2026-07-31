@@ -214,7 +214,7 @@ def patch_package(path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def build(path: Path) -> None:
+def build(path: Path, image: Path | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
     section = document.sections[0]
@@ -236,6 +236,10 @@ def build(path: Path) -> None:
     set_east_asia_font(title_run, "Arial Unicode MS")
     title_run.bold = True
     title_run.font.size = Pt(18)
+
+    if image is not None:
+        document.add_paragraph("下方图片包含仅用于回归测试的合成敏感数据：")
+        document.add_picture(str(image), width=Inches(6.0))
 
     paragraph = document.add_paragraph("跨 run 联系电话：")
     run = paragraph.add_run("138")
@@ -292,8 +296,13 @@ def main() -> int:
         nargs="?",
         default=Path("fixtures/docx/comprehensive.docx"),
     )
+    parser.add_argument(
+        "--image",
+        type=Path,
+        help="可选的合成 PNG/JPEG，用于生成嵌入图片递归脱敏样本",
+    )
     args = parser.parse_args()
-    build(args.output)
+    build(args.output, args.image)
     print(args.output)
     return 0
 

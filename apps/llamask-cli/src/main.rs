@@ -8,11 +8,12 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use clap::{Parser, Subcommand};
 use llamask_core::{
-    DocxTaskDraft, ImageTaskDraft, PolicyConfig, RuntimeRegistry, TaskDraft,
+    DocxTaskDraft, ImageTaskDraft, PolicyConfig, RuntimeRegistry, TaskDraft, XlsxTaskDraft,
     export_docx_task_with_runtimes, export_image_task_with_runtimes, export_task_with_runtimes,
-    render_task_with_runtimes, scan_docx_with_policy, scan_image_with_policy,
-    scan_path_with_policy, scan_text_with_policy, verify_docx_file_with_runtimes,
-    verify_file_with_runtimes, verify_image_file_with_runtimes,
+    export_xlsx_task_with_runtimes, render_task_with_runtimes, scan_docx_with_policy_and_images,
+    scan_image_with_policy, scan_path_with_policy, scan_text_with_policy, scan_xlsx_with_policy,
+    verify_docx_file_with_runtimes, verify_file_with_runtimes, verify_image_file_with_runtimes,
+    verify_xlsx_file_with_runtimes,
 };
 
 const MAX_STDIN_BYTES: usize = 2 * 1024 * 1024;
@@ -70,6 +71,22 @@ enum Command {
         policy: Option<PathBuf>,
         #[arg(long)]
         runtimes: Option<PathBuf>,
+        /// 注册表中的 OCR 运行项 id；提供 runtimes 时递归扫描嵌入图片
+        #[arg(long, default_value = "pp_ocr_small")]
+        ocr_runtime: String,
+    },
+    /// 扫描 XLSX 单元格、公式、批注、隐藏内容、绘图文字和嵌入图片
+    ScanXlsx {
+        input: PathBuf,
+        #[arg(short, long)]
+        task: PathBuf,
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        #[arg(long)]
+        runtimes: Option<PathBuf>,
+        /// 注册表中的 OCR 运行项 id；提供 runtimes 时递归扫描嵌入图片
+        #[arg(long, default_value = "pp_ocr_small")]
+        ocr_runtime: String,
     },
     /// 按任务草稿生成脱敏副本；不会覆盖原件或已有文件
     Export {
@@ -96,6 +113,14 @@ enum Command {
         #[arg(long)]
         runtimes: Option<PathBuf>,
     },
+    /// 生成最小 OOXML 改动的 XLSX 脱敏副本，并执行包内残留复扫
+    ExportXlsx {
+        task: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(long)]
+        runtimes: Option<PathBuf>,
+    },
     /// 对已有副本重新运行规则和可选本地模型
     Verify {
         task: PathBuf,
@@ -112,6 +137,13 @@ enum Command {
     },
     /// 对 DOCX 副本执行解包文本、隐藏部件、元数据和 ZIP 结构复核
     VerifyDocx {
+        task: PathBuf,
+        file: PathBuf,
+        #[arg(long)]
+        runtimes: Option<PathBuf>,
+    },
+    /// 对 XLSX 副本执行单元格、公式、批注、图片、元数据和 ZIP 结构复核
+    VerifyXlsx {
         task: PathBuf,
         file: PathBuf,
         #[arg(long)]
@@ -160,6 +192,10 @@ fn read_image_task(path: &Path) -> Result<ImageTaskDraft, Box<dyn std::error::Er
 }
 
 fn read_docx_task(path: &Path) -> Result<DocxTaskDraft, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+fn read_xlsx_task(path: &Path) -> Result<XlsxTaskDraft, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
@@ -304,30 +340,125 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             task,
             policy,
             runtimes,
+            ocr_runtime,
         } => {
             let policy = match policy {
                 Some(path) => read_policy(&path)?,
                 None => PolicyConfig::default(),
             };
             let runtimes = read_runtimes(runtimes.as_deref())?;
-            let draft = scan_docx_with_policy(&input, &policy, runtimes.as_ref())?;
+            let draft = scan_docx_with_policy_and_images(
+                &input,
+                &policy,
+                runtimes.as_ref(),
+                runtimes.as_ref().map(|_| ocr_runtime.as_str()),
+            )?;
             let bytes = serde_json::to_vec_pretty(&draft)?;
             write_new(&task, &bytes)?;
             println!(
-                "DOCX 扫描完成：{} 个命中，{} 个待复核，{} 个文本部分；任务草稿包含敏感原文，请妥善保管。\n{}",
+                "DOCX 扫描完成：{} 个文本命中、{} 个图片逻辑命中，{} 个待复核，{} 个文本部分、{} 张嵌入图片；任务草稿包含敏感原文，请妥善保管。\n{}",
                 draft.findings.len(),
+                draft
+                    .embedded_images
+                    .iter()
+                    .flat_map(|image| image
+                        .task
+                        .findings
+                        .iter()
+                        .map(move |finding| (&image.entry_name, &finding.group_id)))
+                    .collect::<BTreeSet<_>>()
+                    .len(),
                 draft
                     .findings
                     .iter()
                     .filter(|finding| !finding.reviewed)
-                    .count(),
+                    .count()
+                    + draft
+                        .embedded_images
+                        .iter()
+                        .flat_map(|image| image
+                            .task
+                            .findings
+                            .iter()
+                            .filter(|finding| !finding.reviewed)
+                            .map(move |finding| (&image.entry_name, &finding.group_id)))
+                        .collect::<BTreeSet<_>>()
+                        .len(),
                 draft.document.parts.len(),
+                draft.embedded_images.len(),
                 task.display()
             );
             for diagnostic in &draft.diagnostics {
                 eprintln!(
                     "提示 [{}] {}",
                     diagnostic.detector_id.as_deref().unwrap_or("docx-core"),
+                    diagnostic.message
+                );
+            }
+        }
+        Command::ScanXlsx {
+            input,
+            task,
+            policy,
+            runtimes,
+            ocr_runtime,
+        } => {
+            let policy = match policy {
+                Some(path) => read_policy(&path)?,
+                None => PolicyConfig::default(),
+            };
+            let runtimes = read_runtimes(runtimes.as_deref())?;
+            let draft = scan_xlsx_with_policy(
+                &input,
+                &policy,
+                runtimes.as_ref(),
+                runtimes.as_ref().map(|_| ocr_runtime.as_str()),
+            )?;
+            let bytes = serde_json::to_vec_pretty(&draft)?;
+            write_new(&task, &bytes)?;
+            let image_findings = draft
+                .embedded_images
+                .iter()
+                .flat_map(|image| {
+                    image
+                        .task
+                        .findings
+                        .iter()
+                        .map(move |finding| (&image.entry_name, &finding.group_id))
+                })
+                .collect::<BTreeSet<_>>()
+                .len();
+            let unreviewed = draft
+                .findings
+                .iter()
+                .filter(|finding| !finding.reviewed)
+                .count()
+                + draft
+                    .embedded_images
+                    .iter()
+                    .flat_map(|image| {
+                        image
+                            .task
+                            .findings
+                            .iter()
+                            .filter(|finding| !finding.reviewed)
+                            .map(move |finding| (&image.entry_name, &finding.group_id))
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .len();
+            println!(
+                "XLSX 扫描完成：{} 个结构化命中、{} 个图片逻辑命中，{} 个待复核，{} 个内容部分、{} 张嵌入图片；任务草稿包含敏感原文，请妥善保管。\n{}",
+                draft.findings.len(),
+                image_findings,
+                unreviewed,
+                draft.document.parts.len(),
+                draft.embedded_images.len(),
+                task.display()
+            );
+            for diagnostic in &draft.diagnostics {
+                eprintln!(
+                    "提示 [{}] {}",
+                    diagnostic.detector_id.as_deref().unwrap_or("xlsx-core"),
                     diagnostic.message
                 );
             }
@@ -360,6 +491,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let draft = read_docx_task(&task)?;
             let runtimes = read_runtimes(runtimes.as_deref())?;
             let report = export_docx_task_with_runtimes(&draft, &output, runtimes.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::ExportXlsx {
+            task,
+            output,
+            runtimes,
+        } => {
+            let draft = read_xlsx_task(&task)?;
+            let runtimes = read_runtimes(runtimes.as_deref())?;
+            let report = export_xlsx_task_with_runtimes(&draft, &output, runtimes.as_ref())?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Verify {
@@ -396,6 +537,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let draft = read_docx_task(&task)?;
             let runtimes = read_runtimes(runtimes.as_deref())?;
             let report = verify_docx_file_with_runtimes(&draft, &file, runtimes.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.passed {
+                std::process::exit(2);
+            }
+        }
+        Command::VerifyXlsx {
+            task,
+            file,
+            runtimes,
+        } => {
+            let draft = read_xlsx_task(&task)?;
+            let runtimes = read_runtimes(runtimes.as_deref())?;
+            let report = verify_xlsx_file_with_runtimes(&draft, &file, runtimes.as_ref())?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             if !report.passed {
                 std::process::exit(2);
