@@ -3,6 +3,11 @@
 .env.*
 !.env.example
 /target/
+node_modules/
+.pnpm-store/
+dist/
+.vite/
+apps/llamask-desktop/src-tauri/gen/
 .venv/
 .venv-siamese/
 .venv-siamese-onnx/

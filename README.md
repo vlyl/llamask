@@ -32,6 +32,7 @@ Office 文档的可见/隐藏文字域、备注、批注、母版及嵌入图片
 - [XLSX 纵向切片与安全边界](docs/10-xlsx-vertical-slice.md)
 - [PPTX 纵向切片与安全边界](docs/11-pptx-vertical-slice.md)
 - [PDF 纵向切片与安全边界](docs/12-pdf-vertical-slice.md)
+- [桌面端 MVP 架构与首个里程碑](docs/13-desktop-mvp-architecture.md)
 
 ## 当前确定的首发范围
 
@@ -253,3 +254,8 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 图形界面、PDF 对象保留/干净搜索层模式仍属于后续纵向切片。Office 与 PDF
 适配器的下一个发布门槛是双平台 Microsoft Office/LibreOffice/Keynote 与
 系统 PDF 阅读器真实文件回归，以及继续扩展 PNG/JPEG 之外的安全媒体支持。
+
+桌面端阶段已经开始：`apps/llamask-desktop` 提供 Tauri 2 + React/TypeScript
+最小窗口、受限文件选择权限、拖放导入、Rust 会话路径注册表、格式/大小预检
+和任务列表界面。当前里程碑不会伪造扫描结果，“开始扫描”在后台编排器接入
+前保持禁用。开发和安全边界见桌面端架构文档。
