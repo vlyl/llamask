@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Check version files and changelog
+        shell: bash
+        run: bash scripts/check-release-version.sh "${GITHUB_REF_NAME}"
+
+  ci:
+    name: Run release CI
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - validate-version
+      - ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          notes_file=".github/release-notes/${tag}.md"
+          args=(--repo "${GITHUB_REPOSITORY}" --verify-tag --title "LlaMask ${tag}")
+
+          if [[ "${tag}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+
+          if [[ -f "${notes_file}" ]]; then
+            args+=(--notes-file "${notes_file}")
+          else
+            args+=(--generate-notes)
+          fi
+
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release ${tag} already exists"
+            exit 0
+          fi
+
+          gh release create "${tag}" "${args[@]}"
