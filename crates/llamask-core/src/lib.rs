@@ -35,8 +35,9 @@ pub use pptx_workflow::{
 };
 pub use sidecar::{RuntimeRegistry, SidecarError};
 pub use workflow::{
-    WorkflowError, export_task, export_task_with_runtimes, render_task_with_runtimes, scan_path,
-    scan_path_with_policy, scan_text_with_policy, verify_file, verify_file_with_runtimes,
+    WorkflowError, export_task, export_task_with_runtimes, render_task_with_runtimes,
+    review_text_finding, scan_path, scan_path_with_policy, scan_text_with_policy, verify_file,
+    verify_file_with_runtimes,
 };
 pub use xlsx_workflow::{
     XlsxWorkflowError, export_xlsx_task_with_runtimes, scan_xlsx_with_policy,

@@ -1010,6 +1010,184 @@ button:focus-visible {
   font-size: 10px;
 }
 
+.text-review-workspace {
+  width: min(980px, 94vw);
+  height: min(880px, 92vh);
+}
+
+.text-review-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 22px 22px;
+  overflow: hidden;
+}
+
+.text-review-security-note {
+  flex: none;
+  grid-template-columns: 22px minmax(0, 1fr);
+  font-size: 10px;
+}
+
+.text-finding-list {
+  display: grid;
+  min-height: 0;
+  gap: 12px;
+  padding-right: 5px;
+  overflow: auto;
+}
+
+.text-finding-card {
+  padding: 15px 16px;
+  background: #fff;
+  border: 1px solid #dfe6e2;
+  border-radius: 12px;
+  box-shadow: 0 3px 12px rgba(25, 46, 37, 0.025);
+}
+
+.text-finding-card.pending {
+  background: #fffdf7;
+  border-color: #e7d5ad;
+}
+
+.text-finding-heading,
+.text-finding-heading > div {
+  display: flex;
+  align-items: center;
+}
+
+.text-finding-heading {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.text-finding-heading > div {
+  gap: 8px;
+}
+
+.finding-number {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: #587067;
+  font-size: 8px;
+  font-weight: 800;
+  background: #edf2ef;
+  border-radius: 6px;
+}
+
+.text-finding-heading strong {
+  font-size: 11px;
+}
+
+.text-finding-heading small {
+  color: #87948e;
+  font-size: 9px;
+}
+
+.text-finding-heading em {
+  color: #27775b;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.text-finding-card.pending .text-finding-heading em {
+  color: #a66a12;
+}
+
+.text-context {
+  margin: 13px 0;
+  padding: 12px 13px;
+  overflow-wrap: anywhere;
+  color: #52635b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  background: #f6f8f7;
+  border: 1px solid #e4e9e6;
+  border-radius: 8px;
+}
+
+.text-context mark {
+  padding: 2px 3px;
+  color: #3b2a05;
+  font-weight: 700;
+  background: #ffe2a0;
+  border-radius: 3px;
+}
+
+.replacement-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  color: #67776f;
+  font-size: 9px;
+}
+
+.replacement-field input {
+  min-width: 0;
+  padding: 8px 10px;
+  color: #24352d;
+  font: inherit;
+  background: #fff;
+  border: 1px solid #cdd7d2;
+  border-radius: 7px;
+  outline: none;
+}
+
+.replacement-field input:focus {
+  border-color: #278360;
+  box-shadow: 0 0 0 2px rgba(39, 131, 96, 0.12);
+}
+
+.replacement-field small {
+  color: #98a29d;
+  font-size: 8px;
+}
+
+.text-finding-actions {
+  margin-top: 12px;
+}
+
+.text-finding-actions .secondary-button {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 9px;
+}
+
+.empty-text-review {
+  display: flex;
+  min-height: 260px;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  color: #497161;
+  background: #fff;
+  border: 1px solid #dfe6e2;
+  border-radius: 12px;
+}
+
+.empty-text-review svg {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 13px;
+}
+
+.empty-text-review strong {
+  font-size: 12px;
+}
+
+.empty-text-review span {
+  margin-top: 7px;
+  color: #829089;
+  font-size: 10px;
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 224px minmax(0, 1fr);

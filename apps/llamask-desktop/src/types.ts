@@ -62,6 +62,7 @@ export type DesktopScanStage =
   | "preflight"
   | "ocr"
   | "scanning_pages"
+  | "detecting_text"
   | "complete"
   | "exporting"
   | "failed"
@@ -117,4 +118,27 @@ export interface DesktopReviewPage {
 export interface DesktopReviewMutation {
   summary: DesktopScanSummary;
   findings: DesktopReviewFinding[];
+}
+
+export interface DesktopTextReviewFinding {
+  findingId: string;
+  entityType: string;
+  confidence: number;
+  contextBefore: string;
+  matchedText: string;
+  contextAfter: string;
+  replacement: string;
+  selected: boolean;
+  reviewed: boolean;
+}
+
+export interface DesktopTextReview {
+  id: string;
+  totalCharacters: number;
+  findings: DesktopTextReviewFinding[];
+}
+
+export interface DesktopTextReviewMutation {
+  summary: DesktopScanSummary;
+  findings: DesktopTextReviewFinding[];
 }

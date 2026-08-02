@@ -51,6 +51,10 @@ pub enum WorkflowError {
     RequiredDetectorUnavailable(String),
     #[error("任务中的 policy_id 与策略快照不一致")]
     PolicySnapshotMismatch,
+    #[error("找不到文本复核结果：{0}")]
+    FindingNotFound(String),
+    #[error("替换内容不能超过 256 个字符")]
+    ReplacementTooLong,
 }
 
 pub fn scan_path(path: &Path) -> Result<TaskDraft, WorkflowError> {
@@ -217,6 +221,29 @@ pub fn scan_text_with_policy(
 ) -> Result<TaskDraft, WorkflowError> {
     let document = document_from_text(text, "stdin://clipboard", FileKind::Clipboard);
     scan_document_with_policy(document, policy, runtimes)
+}
+
+pub fn review_text_finding(
+    task: &mut TaskDraft,
+    finding_id: &str,
+    selected: bool,
+    replacement: Option<&str>,
+) -> Result<(), WorkflowError> {
+    validate_task(task)?;
+    let finding = task
+        .findings
+        .iter_mut()
+        .find(|finding| finding.id == finding_id)
+        .ok_or_else(|| WorkflowError::FindingNotFound(finding_id.to_owned()))?;
+    if let Some(replacement) = replacement {
+        if replacement.chars().count() > 256 {
+            return Err(WorkflowError::ReplacementTooLong);
+        }
+        finding.replacement = replacement.to_owned();
+    }
+    finding.selected = selected;
+    finding.reviewed = true;
+    Ok(())
 }
 
 fn sidecar_warning_diagnostic(detector_id: &str, warning: &str) -> TaskDiagnostic {
@@ -534,9 +561,47 @@ mod tests {
     use crate::policy::{ExactTermPolicy, PolicyConfig};
 
     use super::{
-        WorkflowError, export_task, render_task_with_runtimes, scan_path, scan_path_with_policy,
-        scan_text_with_policy, verify_file,
+        WorkflowError, export_task, render_task_with_runtimes, review_text_finding, scan_path,
+        scan_path_with_policy, scan_text_with_policy, verify_file,
     };
+
+    #[test]
+    fn text_review_updates_selection_and_replacement_without_changing_source() {
+        let mut task = scan_text_with_policy(
+            "联系邮箱 case@example.com".to_owned(),
+            &PolicyConfig::default(),
+            None,
+        )
+        .unwrap();
+        let finding_id = task.findings[0].id.clone();
+        let source = task.document.parts[0].text.clone();
+
+        review_text_finding(&mut task, &finding_id, true, Some("[私人邮箱]")).unwrap();
+
+        assert!(task.findings[0].selected);
+        assert!(task.findings[0].reviewed);
+        assert_eq!(task.findings[0].replacement, "[私人邮箱]");
+        assert_eq!(task.document.parts[0].text, source);
+    }
+
+    #[test]
+    fn text_review_rejects_unknown_findings_and_oversized_replacements() {
+        let mut task = scan_text_with_policy(
+            "联系邮箱 case@example.com".to_owned(),
+            &PolicyConfig::default(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            review_text_finding(&mut task, "missing", false, None),
+            Err(WorkflowError::FindingNotFound(_))
+        ));
+        let finding_id = task.findings[0].id.clone();
+        assert!(matches!(
+            review_text_finding(&mut task, &finding_id, true, Some(&"x".repeat(257))),
+            Err(WorkflowError::ReplacementTooLong)
+        ));
+    }
 
     #[test]
     fn scan_export_verify_preserves_source() {

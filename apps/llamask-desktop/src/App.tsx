@@ -15,6 +15,7 @@ import {
   TrashIcon,
 } from "./icons";
 import { ReviewWorkspace } from "./ReviewWorkspace";
+import { TextReviewWorkspace } from "./TextReviewWorkspace";
 import type {
   DesktopCapabilities,
   DesktopCommandError,
@@ -23,6 +24,8 @@ import type {
   DesktopReviewMutation,
   DesktopReviewPage,
   DesktopScanSummary,
+  DesktopTextReview,
+  DesktopTextReviewMutation,
   ImageRect,
   ImportedFile,
 } from "./types";
@@ -44,7 +47,7 @@ const browserCapabilities: DesktopCapabilities = {
     "jpg",
     "jpeg",
   ],
-  scanExtensions: ["pdf", "png", "jpg", "jpeg"],
+  scanExtensions: ["txt", "md", "pdf", "png", "jpg", "jpeg"],
   milestone: "browser-preview",
 };
 
@@ -109,6 +112,11 @@ const scanErrorLabels: Record<string, string> = {
   SCAN_WORKER_FAILED: "本地扫描任务异常结束",
   IMAGE_SCAN_FAILED: "图片扫描未完成",
   PDF_SCAN_FAILED: "PDF 扫描未完成",
+  TEXT_ENCODING_UNSUPPORTED: "文本不是有效的 UTF-8 编码",
+  UNSUPPORTED_TEXT_TYPE: "文本格式不受支持",
+  TEXT_READ_FAILED: "文本文件无法安全读取",
+  TEXT_SCAN_FAILED: "文本扫描未完成",
+  MODEL_RUNTIME_REQUIRED: "策略要求的本地语义模型不可用",
   OUTPUT_EXISTS: "目标文件已经存在，请选择其他名称",
   OUTPUT_CONFLICT: "输出路径不能覆盖源文件",
   OUTPUT_TYPE_INVALID: "输出文件扩展名与源文件不匹配",
@@ -120,6 +128,7 @@ const scanErrorLabels: Record<string, string> = {
   EXPORT_WORKER_FAILED: "本地导出任务异常结束",
   IMAGE_EXPORT_FAILED: "图片安全导出未完成",
   PDF_EXPORT_FAILED: "PDF 安全导出未完成",
+  TEXT_EXPORT_FAILED: "文本安全导出未完成",
 };
 
 interface DesktopImportEvent {
@@ -189,6 +198,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [scanStarting, setScanStarting] = useState(false);
   const [reviewPage, setReviewPage] = useState<DesktopReviewPage | null>(null);
+  const [textReview, setTextReview] = useState<DesktopTextReview | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -257,7 +267,7 @@ function App() {
         setNotice(
           event.payload.verificationComplete
             ? `${output} 已生成并通过完整残留复扫。`
-            : `${output} 已生成；规则与 OCR 复扫通过，但可选语义模型未参与复扫。`,
+            : `${output} 已生成；适用的规则与 OCR 复扫通过，但可选语义模型未参与复扫。`,
         );
       } else if (event.payload.status === "export_failed") {
         setNotice(
@@ -324,6 +334,7 @@ function App() {
       return next;
     });
     setReviewPage((current) => (current?.id === id ? null : current));
+    setTextReview((current) => (current?.id === id ? null : current));
   };
 
   const clearFiles = async () => {
@@ -338,6 +349,7 @@ function App() {
     setFiles([]);
     setScans(new Map());
     setReviewPage(null);
+    setTextReview(null);
   };
 
   const startScanning = async () => {
@@ -378,11 +390,49 @@ function App() {
     setReviewBusy(true);
     setNotice(null);
     try {
+      const file = files.find((candidate) => candidate.id === id);
+      if (file?.kind === "text") {
+        const review = await invoke<DesktopTextReview>("review_text_scan", { id });
+        setTextReview(review);
+        setReviewPage(null);
+        return;
+      }
       const page = await invoke<DesktopReviewPage>("review_scan_page", {
         id,
         pageNumber,
       });
       setReviewPage(page);
+      setTextReview(null);
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const applyTextReviewMutation = async (
+    findingId: string,
+    selected: boolean,
+    replacement?: string,
+  ) => {
+    if (!textReview || !tauriRuntime) return;
+    setReviewBusy(true);
+    setNotice(null);
+    try {
+      const mutation = await invoke<DesktopTextReviewMutation>("set_text_review_finding", {
+        id: textReview.id,
+        findingId,
+        selected,
+        replacement,
+      });
+      setTextReview((current) =>
+        current?.id === textReview.id ? { ...current, findings: mutation.findings } : current,
+      );
+      setScans((current) => {
+        const next = new Map(current);
+        next.set(mutation.summary.id, mutation.summary);
+        return next;
+      });
     } catch (error) {
       setNotice(normalizeError(error).message);
     } finally {
@@ -461,7 +511,22 @@ function App() {
   const reviewFile = reviewPage
     ? files.find((file) => file.id === reviewPage.id) ?? null
     : null;
-  const reviewScan = reviewPage ? scans.get(reviewPage.id) : undefined;
+  const textReviewFile = textReview
+    ? files.find((file) => file.id === textReview.id) ?? null
+    : null;
+  const reviewScanId = reviewPage?.id ?? textReview?.id;
+  const reviewScan = reviewScanId ? scans.get(reviewScanId) : undefined;
+  const hasScannableText = files.some((file) => {
+    const scan = scans.get(file.id);
+    return (
+      file.kind === "text" &&
+      file.ready &&
+      file.scanSupported &&
+      (!scan || ["blocked", "cancelled"].includes(scan.status))
+    );
+  });
+  const scanRuntimeReady =
+    runtimeStatus.scanReady || (runtimeStatus.policyReady && hasScannableText);
 
   return (
     <div className="app-shell">
@@ -512,7 +577,7 @@ function App() {
                     ? `${summary.active} 个文件正在本机处理`
                     : summary.completed > 0
                       ? `${summary.completed} 个文件扫描完成`
-                      : "PDF 与图片已接入"}
+                      : "文本、PDF 与图片已接入"}
                 </small>
               </div>
             </li>
@@ -551,9 +616,13 @@ function App() {
             <p>导入文件后，LlaMask 将在本机完成识别、复核与安全导出。</p>
           </div>
           <div className="header-actions">
-            <span className={`runtime-chip ${runtimeStatus.scanReady ? "" : "warning"}`}>
+            <span className={`runtime-chip ${runtimeStatus.ocrReady ? "" : "warning"}`}>
               <span /> Core {capabilities.coreVersion}
-              {runtimeStatus.scanReady ? ` · OCR ${runtimeStatus.ocrRuntimeId}` : " · OCR 未就绪"}
+              {runtimeStatus.ocrReady
+                ? ` · OCR ${runtimeStatus.ocrRuntimeId}`
+                : runtimeStatus.policyReady
+                  ? " · 文本规则可用 · OCR 未就绪"
+                  : " · 运行环境未就绪"}
             </span>
             <button
               className="primary-button compact"
@@ -586,7 +655,7 @@ function App() {
           <div>
             <h2>{dragging ? "松开即可加入任务" : "拖入需要脱敏的文件"}</h2>
             <p>
-              可导入 DOCX、XLSX、PPTX、PDF、图片、TXT 和 Markdown；当前扫描增量支持{" "}
+              可导入 DOCX、XLSX、PPTX、PDF、图片、TXT 和 Markdown；当前扫描支持{" "}
               {capabilities.scanExtensions.map((extension) => extension.toUpperCase()).join("、")}，单次最多{" "}
               {capabilities.maxImportFiles} 个
             </p>
@@ -710,11 +779,13 @@ function App() {
           </div>
           <div className="next-action">
             <span>
-              {!runtimeStatus.scanReady
-                ? "请先完成本地 OCR 资源安装与完整性校验"
+              {!scanRuntimeReady
+                ? "请完成默认策略或本地 OCR 资源完整性检查"
                 : summary.scannable === 0
-                  ? "请导入 PDF、PNG 或 JPEG"
-                  : "扫描任务和敏感结果只保存在 Rust 进程内"}
+                  ? "请导入 TXT、Markdown、PDF、PNG 或 JPEG"
+                  : !runtimeStatus.ocrReady && hasScannableText
+                    ? "文本将使用本地规则扫描；安装语义模型后可增强识别"
+                    : "扫描任务和敏感结果只保存在 Rust 进程内"}
             </span>
             <button
               className="primary-button"
@@ -725,7 +796,7 @@ function App() {
                 summary.active > 0 ||
                 summary.exporting > 0 ||
                 summary.scannable === 0 ||
-                !runtimeStatus.scanReady
+                !scanRuntimeReady
               }
             >
               {scanStarting ? "正在启动…" : summary.active > 0 ? "扫描进行中" : "开始扫描"}
@@ -755,6 +826,17 @@ function App() {
             applyReviewMutation("remove_review_mask", { groupId })
           }
           onExport={() => exportScan(reviewPage.id)}
+        />
+      )}
+      {textReview && textReviewFile && (
+        <TextReviewWorkspace
+          file={textReviewFile}
+          review={textReview}
+          busy={reviewBusy}
+          exporting={reviewScan?.status === "exporting"}
+          onClose={() => setTextReview(null)}
+          onSetFinding={applyTextReviewMutation}
+          onExport={() => exportScan(textReview.id)}
         />
       )}
     </div>

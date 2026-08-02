@@ -337,14 +337,15 @@ support beyond PNG/JPEG.
 Desktop development lives under `apps/llamask-desktop`. It provides a minimal
 Tauri 2 + React/TypeScript window, restricted file selection, drag and drop
 import, a Rust session-path registry, format and size preflight checks, and a
-task-list interface. PDF, PNG, and JPEG files now use the real `llamask-core`
-scanner on a controlled background worker with runtime integrity checks,
-path-free progress events, and cooperative cancellation. Sensitive scan drafts
-remain in Rust memory. The review workspace requests only a bounded, re-encoded
-page preview and geometry when the user opens a page; it can accept or retain
-findings, move and resize masks, add manual masks, and invoke the existing
-fail-closed safe export and residual rescan through a native save dialog. OCR
-plaintext and source paths are not returned to the WebView. The next increment
-connects text, Office, clipboard, and batch output to the same state machine.
+task-list interface. TXT, Markdown, PDF, PNG, and JPEG use the real
+`llamask-core` scanner on a controlled background worker with path-free progress
+events and cooperative cancellation. Sensitive scan drafts remain in Rust
+memory. Image/PDF review requests only a bounded, re-encoded page preview and
+geometry. Text review requests only the matched value and 80 Unicode characters
+of context on each side, never the source path or whole document. Users can edit
+text replacements, retain findings, move and resize masks, add manual masks,
+and invoke fail-closed safe export and residual rescan through a native save
+dialog. The next increment connects clipboard and Office documents, followed
+by batch output.
 See the desktop architecture document for development details and safety
 boundaries.
