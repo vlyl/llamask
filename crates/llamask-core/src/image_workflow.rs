@@ -9,7 +9,7 @@ use tempfile::Builder;
 use thiserror::Error;
 
 use crate::model::{
-    DiagnosticSeverity, EntityType, FileKind, ImageFileKind, ImageFinding, ImageRect,
+    DiagnosticSeverity, EntityType, FileKind, ImageFileKind, ImageFinding, ImagePreview, ImageRect,
     ImageResidualFinding, ImageSourceMetadata, ImageTaskDraft, ImageVerificationReport,
     TaskDiagnostic,
 };
@@ -25,6 +25,7 @@ const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 20_000;
 const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+const MAX_PREVIEW_DIMENSION: u32 = 2_400;
 
 #[derive(Debug, Error)]
 pub enum ImageWorkflowError {
@@ -66,6 +67,12 @@ pub enum ImageWorkflowError {
     UnreviewedFindings(usize),
     #[error("图片残留复扫失败，发现 {0} 个未处理结果")]
     VerificationFailed(usize),
+    #[error("找不到图片复核结果：{0}")]
+    FindingNotFound(String),
+    #[error("找不到图片复核结果组：{0}")]
+    GroupNotFound(String),
+    #[error("只有用户手动新增的遮罩可以被删除：{0}")]
+    DetectedGroupCannotBeRemoved(String),
 }
 
 struct DecodedImage {
@@ -152,6 +159,7 @@ pub fn scan_image_with_policy(
                         width,
                         height,
                     ),
+                    manual: false,
                     selected,
                     reviewed,
                 });
@@ -182,6 +190,144 @@ pub fn scan_image_with_policy(
         diagnostics,
         contains_sensitive_plaintext: true,
     })
+}
+
+pub fn render_image_task_preview(
+    task: &ImageTaskDraft,
+) -> Result<ImagePreview, ImageWorkflowError> {
+    task.policy.validate()?;
+    if task.policy_id != task.policy.id {
+        return Err(ImageWorkflowError::PolicySnapshotMismatch);
+    }
+    let decoded = current_source(task)?;
+    validate_findings(task)?;
+    let png_bytes = encode_preview_png(DynamicImage::ImageRgba8(decoded.rgba))?;
+    Ok(ImagePreview {
+        width: task.source.width,
+        height: task.source.height,
+        png_bytes,
+    })
+}
+
+pub(crate) fn encode_preview_png(image: DynamicImage) -> Result<Vec<u8>, image::ImageError> {
+    let preview = image.thumbnail(MAX_PREVIEW_DIMENSION, MAX_PREVIEW_DIMENSION);
+    let mut png_bytes = Vec::new();
+    preview.write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)?;
+    Ok(png_bytes)
+}
+
+pub fn review_image_group(
+    task: &mut ImageTaskDraft,
+    group_id: &str,
+    selected: bool,
+) -> Result<(), ImageWorkflowError> {
+    let mut found = false;
+    for finding in task
+        .findings
+        .iter_mut()
+        .filter(|finding| finding.group_id == group_id)
+    {
+        finding.selected = selected;
+        finding.reviewed = true;
+        found = true;
+    }
+    if !found {
+        return Err(ImageWorkflowError::GroupNotFound(group_id.to_owned()));
+    }
+    validate_findings(task)
+}
+
+pub fn update_image_mask(
+    task: &mut ImageTaskDraft,
+    finding_id: &str,
+    mask_rect: ImageRect,
+) -> Result<(), ImageWorkflowError> {
+    if !valid_rect(mask_rect, task.source.width, task.source.height) {
+        return Err(ImageWorkflowError::InvalidMaskRect(finding_id.to_owned()));
+    }
+    let group_id = task
+        .findings
+        .iter()
+        .find(|finding| finding.id == finding_id)
+        .map(|finding| finding.group_id.clone())
+        .ok_or_else(|| ImageWorkflowError::FindingNotFound(finding_id.to_owned()))?;
+    for finding in task
+        .findings
+        .iter_mut()
+        .filter(|finding| finding.group_id == group_id)
+    {
+        if finding.id == finding_id {
+            finding.mask_rect = mask_rect;
+        }
+        finding.selected = true;
+        finding.reviewed = true;
+    }
+    validate_findings(task)
+}
+
+pub fn add_manual_image_mask(
+    task: &mut ImageTaskDraft,
+    mask_rect: ImageRect,
+) -> Result<String, ImageWorkflowError> {
+    if !valid_rect(mask_rect, task.source.width, task.source.height) {
+        return Err(ImageWorkflowError::InvalidMaskRect("manual".to_owned()));
+    }
+    let mut sequence = task.findings.len() + 1;
+    let (finding_id, group_id) = loop {
+        let finding_id = format!("manual-finding-{sequence:04}");
+        let group_id = format!("manual-group-{sequence:04}");
+        if task
+            .findings
+            .iter()
+            .all(|finding| finding.id != finding_id && finding.group_id != group_id)
+        {
+            break (finding_id, group_id);
+        }
+        sequence += 1;
+    };
+    task.findings.push(ImageFinding {
+        id: finding_id,
+        group_id: group_id.clone(),
+        line_index: 0,
+        text_start: 0,
+        text_end: 0,
+        entity_type: EntityType::BusinessMetric,
+        matched_text: String::new(),
+        line_fragment: String::new(),
+        recognized_line: String::new(),
+        detector: "user".to_owned(),
+        confidence: 1.0,
+        ocr_confidence: 1.0,
+        explanation_code: "USER_ADDED_MASK".to_owned(),
+        ocr_rect: mask_rect,
+        mask_rect,
+        manual: true,
+        selected: true,
+        reviewed: true,
+    });
+    validate_findings(task)?;
+    Ok(group_id)
+}
+
+pub fn remove_manual_image_group(
+    task: &mut ImageTaskDraft,
+    group_id: &str,
+) -> Result<(), ImageWorkflowError> {
+    let group = task
+        .findings
+        .iter()
+        .filter(|finding| finding.group_id == group_id)
+        .collect::<Vec<_>>();
+    if group.is_empty() {
+        return Err(ImageWorkflowError::GroupNotFound(group_id.to_owned()));
+    }
+    if group.iter().any(|finding| !finding.manual) {
+        return Err(ImageWorkflowError::DetectedGroupCannotBeRemoved(
+            group_id.to_owned(),
+        ));
+    }
+    task.findings.retain(|finding| finding.group_id != group_id);
+    validate_findings(task)
 }
 
 pub fn export_image_task_with_runtimes(
@@ -293,14 +439,18 @@ fn verify_image_path(
     let accepted_keep: BTreeSet<(EntityType, String)> = task
         .findings
         .iter()
-        .filter(|finding| finding.reviewed && !finding.selected)
+        .filter(|finding| !finding.manual && finding.reviewed && !finding.selected)
         .map(|finding| (finding.entity_type, finding.matched_text.clone()))
         .collect();
     let layout = ocr_text_layout(&ocr);
     let mut residual_findings = Vec::new();
     let mut seen = BTreeSet::new();
     let mut selected_targets = BTreeSet::new();
-    for finding in task.findings.iter().filter(|finding| finding.selected) {
+    for finding in task
+        .findings
+        .iter()
+        .filter(|finding| !finding.manual && finding.selected)
+    {
         selected_targets.insert((finding.entity_type, finding.matched_text.as_str()));
     }
     for (entity_type, matched_text) in selected_targets {
@@ -473,22 +623,32 @@ fn validate_task(
 
 fn validate_findings(task: &ImageTaskDraft) -> Result<(), ImageWorkflowError> {
     for finding in &task.findings {
+        let text_fields_valid = if finding.manual {
+            finding.text_start == 0
+                && finding.text_end == 0
+                && finding.matched_text.is_empty()
+                && finding.line_fragment.is_empty()
+                && finding.recognized_line.is_empty()
+                && finding.detector == "user"
+        } else {
+            finding.text_start < finding.text_end
+                && finding.text_end <= finding.recognized_line.chars().count()
+                && finding
+                    .recognized_line
+                    .chars()
+                    .skip(finding.text_start)
+                    .take(finding.text_end - finding.text_start)
+                    .collect::<String>()
+                    == finding.line_fragment
+                && !finding.matched_text.is_empty()
+                && !finding.line_fragment.is_empty()
+                && !finding.recognized_line.is_empty()
+        };
         if !valid_rect(finding.ocr_rect, task.source.width, task.source.height)
             || !valid_rect(finding.mask_rect, task.source.width, task.source.height)
             || finding.line_index > 10_000
-            || finding.text_start >= finding.text_end
-            || finding.text_end > finding.recognized_line.chars().count()
-            || finding
-                .recognized_line
-                .chars()
-                .skip(finding.text_start)
-                .take(finding.text_end - finding.text_start)
-                .collect::<String>()
-                != finding.line_fragment
+            || !text_fields_valid
             || finding.group_id.is_empty()
-            || finding.matched_text.is_empty()
-            || finding.line_fragment.is_empty()
-            || finding.recognized_line.is_empty()
             || !finding.confidence.is_finite()
             || !(0.0..=1.0).contains(&finding.confidence)
             || !finding.ocr_confidence.is_finite()
@@ -742,8 +902,13 @@ mod tests {
     use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
     use tempfile::tempdir;
 
-    use super::{approximate_finding_rect, decode_image, expand_text_rect, valid_rect};
-    use crate::model::ImageRect;
+    use super::{
+        add_manual_image_mask, approximate_finding_rect, decode_image, expand_text_rect,
+        remove_manual_image_group, render_image_task_preview, update_image_mask, valid_rect,
+    };
+    use crate::model::{ImageFileKind, ImageRect, ImageSourceMetadata, ImageTaskDraft};
+    use crate::policy::PolicyConfig;
+    use crate::text::sha256_hex;
 
     #[test]
     fn safety_margin_is_clamped_to_image_bounds() {
@@ -837,5 +1002,67 @@ mod tests {
 
         let decoded = decode_image(&path).unwrap();
         assert_eq!(decoded.rgba.get_pixel(0, 0).0, [10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn preview_and_manual_masks_keep_sensitive_text_out_of_new_findings() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("review.png");
+        let image = RgbaImage::from_pixel(20, 12, Rgba([240, 240, 240, 255]));
+        DynamicImage::ImageRgba8(image)
+            .save_with_format(&path, ImageFormat::Png)
+            .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let policy = PolicyConfig::default();
+        let mut task = ImageTaskDraft {
+            schema_version: 1,
+            task_id: "image-task-test".to_owned(),
+            policy_id: policy.id.clone(),
+            policy,
+            source: ImageSourceMetadata {
+                path: path.to_string_lossy().into_owned(),
+                sha256: sha256_hex(&bytes),
+                size_bytes: bytes.len() as u64,
+                file_kind: ImageFileKind::Png,
+                width: 20,
+                height: 12,
+            },
+            ocr_runtime_id: "ocr-test".to_owned(),
+            findings: Vec::new(),
+            diagnostics: Vec::new(),
+            contains_sensitive_plaintext: true,
+        };
+
+        let preview = render_image_task_preview(&task).unwrap();
+        assert_eq!((preview.width, preview.height), (20, 12));
+        assert!(preview.png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let group_id = add_manual_image_mask(
+            &mut task,
+            ImageRect {
+                x0: 2,
+                y0: 3,
+                x1: 10,
+                y1: 9,
+            },
+        )
+        .unwrap();
+        let finding_id = task.findings[0].id.clone();
+        assert!(task.findings[0].manual);
+        assert!(task.findings[0].matched_text.is_empty());
+        update_image_mask(
+            &mut task,
+            &finding_id,
+            ImageRect {
+                x0: 4,
+                y0: 2,
+                x1: 14,
+                y1: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(task.findings[0].mask_rect.x0, 4);
+        remove_manual_image_group(&mut task, &group_id).unwrap();
+        assert!(task.findings.is_empty());
     }
 }

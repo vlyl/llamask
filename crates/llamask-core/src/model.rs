@@ -189,6 +189,13 @@ pub struct ImageRect {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImagePreview {
+    pub width: u32,
+    pub height: u32,
+    pub png_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImageSourceMetadata {
     pub path: String,
     pub sha256: String,
@@ -220,6 +227,9 @@ pub struct ImageFinding {
     pub ocr_rect: ImageRect,
     /// 导出时实际覆盖的矩形。用户可在任务文件或后续复核界面中修改。
     pub mask_rect: ImageRect,
+    /// 用户在复核界面新增的纯几何遮罩，不包含 OCR 原文。
+    #[serde(default)]
+    pub manual: bool,
     pub selected: bool,
     #[serde(default)]
     pub reviewed: bool,

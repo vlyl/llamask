@@ -14,12 +14,16 @@ import {
   ShieldIcon,
   TrashIcon,
 } from "./icons";
+import { ReviewWorkspace } from "./ReviewWorkspace";
 import type {
   DesktopCapabilities,
   DesktopCommandError,
   DesktopFileKind,
   DesktopRuntimeStatus,
+  DesktopReviewMutation,
+  DesktopReviewPage,
   DesktopScanSummary,
+  ImageRect,
   ImportedFile,
 } from "./types";
 
@@ -79,6 +83,9 @@ const scanStatusLabels: Record<DesktopScanSummary["status"], string> = {
   cancelling: "正在取消",
   review_required: "需要复核",
   ready_to_export: "可安全导出",
+  exporting: "正在安全导出",
+  complete: "安全副本已生成",
+  export_failed: "导出已阻断",
   blocked: "扫描已阻断",
   cancelled: "已取消",
 };
@@ -102,6 +109,17 @@ const scanErrorLabels: Record<string, string> = {
   SCAN_WORKER_FAILED: "本地扫描任务异常结束",
   IMAGE_SCAN_FAILED: "图片扫描未完成",
   PDF_SCAN_FAILED: "PDF 扫描未完成",
+  OUTPUT_EXISTS: "目标文件已经存在，请选择其他名称",
+  OUTPUT_CONFLICT: "输出路径不能覆盖源文件",
+  OUTPUT_TYPE_INVALID: "输出文件扩展名与源文件不匹配",
+  REVIEW_REQUIRED: "仍有结果尚未复核",
+  VERIFICATION_FAILED: "残留复扫未通过，未保存副本",
+  SOURCE_CHANGED: "源文件在扫描后发生变化，请重新扫描",
+  OUTPUT_WRITE_FAILED: "安全副本写入失败",
+  REVIEW_DATA_INVALID: "复核数据无效，请重新扫描",
+  EXPORT_WORKER_FAILED: "本地导出任务异常结束",
+  IMAGE_EXPORT_FAILED: "图片安全导出未完成",
+  PDF_EXPORT_FAILED: "PDF 安全导出未完成",
 };
 
 interface DesktopImportEvent {
@@ -148,13 +166,18 @@ function scanDetail(scan: DesktopScanSummary) {
   if (scan.status === "ready_to_export") {
     return `${scan.findingGroups} 个结果已完成自动确认`;
   }
+  if (scan.status === "complete") {
+    return scan.outputName
+      ? `${scan.outputName} · ${scan.verificationComplete ? "完整复检" : "基础复检"}`
+      : "安全副本已生成";
+  }
   return scanStatusLabels[scan.status];
 }
 
 function scanPillClass(scan: DesktopScanSummary | undefined, file: ImportedFile) {
   if (!scan) return file.ready && file.scanSupported ? "ready" : "blocked";
-  if (["blocked", "cancelled"].includes(scan.status)) return "blocked";
-  if (["review_required", "ready_to_export"].includes(scan.status)) return "complete";
+  if (["blocked", "cancelled", "export_failed"].includes(scan.status)) return "blocked";
+  if (["review_required", "ready_to_export", "complete"].includes(scan.status)) return "complete";
   return "scanning";
 }
 
@@ -165,6 +188,8 @@ function App() {
   const [scans, setScans] = useState<Map<string, DesktopScanSummary>>(new Map());
   const [busy, setBusy] = useState(false);
   const [scanStarting, setScanStarting] = useState(false);
+  const [reviewPage, setReviewPage] = useState<DesktopReviewPage | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const tauriRuntime = isTauriRuntime();
@@ -225,6 +250,22 @@ function App() {
         next.set(event.payload.id, event.payload);
         return next;
       });
+      if (event.payload.status === "complete") {
+        const output = event.payload.outputName
+          ? `安全副本 ${event.payload.outputName}`
+          : "安全副本";
+        setNotice(
+          event.payload.verificationComplete
+            ? `${output} 已生成并通过完整残留复扫。`
+            : `${output} 已生成；规则与 OCR 复扫通过，但可选语义模型未参与复扫。`,
+        );
+      } else if (event.payload.status === "export_failed") {
+        setNotice(
+          event.payload.errorCode
+            ? scanErrorLabels[event.payload.errorCode] ?? "安全导出被阻断。"
+            : "安全导出被阻断。",
+        );
+      }
     })
       .then((dispose) => {
         if (active) unlisten.push(dispose);
@@ -282,6 +323,7 @@ function App() {
       next.delete(id);
       return next;
     });
+    setReviewPage((current) => (current?.id === id ? null : current));
   };
 
   const clearFiles = async () => {
@@ -295,6 +337,7 @@ function App() {
     }
     setFiles([]);
     setScans(new Map());
+    setReviewPage(null);
   };
 
   const startScanning = async () => {
@@ -327,17 +370,98 @@ function App() {
     }
   };
 
+  const openReview = async (id: string, pageNumber = 1) => {
+    if (!tauriRuntime) {
+      setNotice("浏览器预览不会读取本地复核页；请在 Tauri 窗口中运行。");
+      return;
+    }
+    setReviewBusy(true);
+    setNotice(null);
+    try {
+      const page = await invoke<DesktopReviewPage>("review_scan_page", {
+        id,
+        pageNumber,
+      });
+      setReviewPage(page);
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const applyReviewMutation = async (
+    command: "set_review_group" | "update_review_mask" | "add_review_mask" | "remove_review_mask",
+    args: Record<string, unknown>,
+  ) => {
+    if (!reviewPage || !tauriRuntime) return;
+    setReviewBusy(true);
+    setNotice(null);
+    try {
+      const mutation = await invoke<DesktopReviewMutation>(command, {
+        id: reviewPage.id,
+        pageNumber: reviewPage.pageNumber,
+        ...args,
+      });
+      setReviewPage((current) =>
+        current && current.id === reviewPage.id && current.pageNumber === reviewPage.pageNumber
+          ? { ...current, findings: mutation.findings }
+          : current,
+      );
+      setScans((current) => {
+        const next = new Map(current);
+        next.set(mutation.summary.id, mutation.summary);
+        return next;
+      });
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const exportScan = async (id: string) => {
+    if (!tauriRuntime) {
+      setNotice("浏览器预览不会写入本地副本；请在 Tauri 窗口中运行。");
+      return;
+    }
+    setReviewBusy(true);
+    setNotice(null);
+    try {
+      const started = await invoke<boolean>("choose_and_export_scan", { id });
+      if (started) setNotice("正在本机生成安全副本并执行残留复扫…");
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
   const summary = useMemo(() => {
     const ready = files.filter((file) => file.ready).length;
     const blocked = files.length - ready;
-    const scannable = files.filter((file) => file.ready && file.scanSupported).length;
+    const scannable = files.filter((file) => {
+      const scan = scans.get(file.id);
+      return (
+        file.ready &&
+        file.scanSupported &&
+        (!scan || ["blocked", "cancelled"].includes(scan.status))
+      );
+    }).length;
     const active = [...scans.values()].filter((scan) => scan.canCancel).length;
+    const exporting = [...scans.values()].filter((scan) => scan.status === "exporting").length;
     const completed = [...scans.values()].filter((scan) =>
-      ["review_required", "ready_to_export"].includes(scan.status),
+      ["review_required", "ready_to_export", "exporting", "complete", "export_failed"].includes(
+        scan.status,
+      ),
     ).length;
     const bytes = files.reduce((total, file) => total + file.sizeBytes, 0);
-    return { ready, blocked, scannable, active, completed, bytes };
+    return { ready, blocked, scannable, active, exporting, completed, bytes };
   }, [files, scans]);
+  const reviewFile = reviewPage
+    ? files.find((file) => file.id === reviewPage.id) ?? null
+    : null;
+  const reviewScan = reviewPage ? scans.get(reviewPage.id) : undefined;
 
   return (
     <div className="app-shell">
@@ -422,7 +546,7 @@ function App() {
       <main className="workspace">
         <header className="workspace-header">
           <div>
-            <p className="eyebrow">桌面端 MVP · 本地扫描</p>
+            <p className="eyebrow">桌面端 MVP · 复核与安全导出</p>
             <h1>新建脱敏任务</h1>
             <p>导入文件后，LlaMask 将在本机完成识别、复核与安全导出。</p>
           </div>
@@ -481,7 +605,12 @@ function App() {
                   {summary.scannable} 个可立即扫描 · {summary.active} 个处理中 · {summary.blocked} 个导入受阻
                 </span>
               </div>
-              <button className="text-button danger" type="button" onClick={() => void clearFiles()}>
+              <button
+                className="text-button danger"
+                type="button"
+                onClick={() => void clearFiles()}
+                disabled={summary.exporting > 0}
+              >
                 <TrashIcon /> 清空
               </button>
             </div>
@@ -509,9 +638,36 @@ function App() {
                         ? scanStatusLabels[scan.status]
                         : reasonLabels[file.reasonCode] ?? "需要检查"}
                     </span>
+                    <div className="file-actions">
+                      {scan &&
+                        ["review_required", "ready_to_export", "export_failed", "complete"].includes(
+                          scan.status,
+                        ) && (
+                          <button
+                            className="text-button"
+                            type="button"
+                            disabled={reviewBusy}
+                            onClick={() => void openReview(file.id)}
+                          >
+                            复核
+                          </button>
+                        )}
+                      {scan &&
+                        ["ready_to_export", "export_failed", "complete"].includes(scan.status) && (
+                          <button
+                            className="secondary-button compact-action"
+                            type="button"
+                            disabled={reviewBusy || scan.status === "exporting"}
+                            onClick={() => void exportScan(file.id)}
+                          >
+                            导出
+                          </button>
+                        )}
+                    </div>
                     <button
                       className="icon-button"
                       type="button"
+                      disabled={scan?.status === "exporting"}
                       onClick={() =>
                         scan?.canCancel
                           ? void cancelScanning(file.id)
@@ -567,6 +723,7 @@ function App() {
               disabled={
                 scanStarting ||
                 summary.active > 0 ||
+                summary.exporting > 0 ||
                 summary.scannable === 0 ||
                 !runtimeStatus.scanReady
               }
@@ -577,6 +734,29 @@ function App() {
           </div>
         </footer>
       </main>
+      {reviewPage && reviewFile && (
+        <ReviewWorkspace
+          file={reviewFile}
+          page={reviewPage}
+          busy={reviewBusy}
+          exporting={reviewScan?.status === "exporting"}
+          onClose={() => setReviewPage(null)}
+          onPageChange={(pageNumber) => openReview(reviewPage.id, pageNumber)}
+          onSetGroup={(groupId, selected) =>
+            applyReviewMutation("set_review_group", { groupId, selected })
+          }
+          onUpdateMask={(findingId, maskRect: ImageRect) =>
+            applyReviewMutation("update_review_mask", { findingId, maskRect })
+          }
+          onAddMask={(maskRect: ImageRect) =>
+            applyReviewMutation("add_review_mask", { maskRect })
+          }
+          onRemoveMask={(groupId) =>
+            applyReviewMutation("remove_review_mask", { groupId })
+          }
+          onExport={() => exportScan(reviewPage.id)}
+        />
+      )}
     </div>
   );
 }
