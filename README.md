@@ -1,5 +1,10 @@
 # LlaMask
 
+[![CI](https://github.com/vlyl/llamask/actions/workflows/ci.yml/badge.svg)](https://github.com/vlyl/llamask/actions/workflows/ci.yml)
+
+> 当前版本：`v0.1.0-alpha.1` 开发者预览。它用于验证脱敏核心、格式适配器和
+> 桌面壳，尚未提供面向普通用户的签名安装包，也不包含可直接使用的模型权重。
+
 LlaMask 是一个面向个人与组织的本地离线数据脱敏工具。它在不上传文件、不依赖云端服务的前提下，识别文本、Office 文档和图片中的敏感信息，供用户复核后生成脱敏副本。
 
 项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片、DOCX、
