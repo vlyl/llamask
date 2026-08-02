@@ -15,17 +15,18 @@ pub use docx_workflow::{
     scan_docx_with_policy_and_images, verify_docx_file_with_runtimes,
 };
 pub use image_workflow::{
-    ImageWorkflowError, export_image_task_with_runtimes, scan_image_with_policy,
-    verify_image_file_with_runtimes,
+    ImageWorkflowError, add_manual_image_mask, export_image_task_with_runtimes,
+    remove_manual_image_group, render_image_task_preview, review_image_group,
+    scan_image_with_policy, update_image_mask, verify_image_file_with_runtimes,
 };
 pub use model::{
-    DocxEmbeddedImageTask, DocxTaskDraft, DocxVerificationReport, Finding, ImageTaskDraft,
-    ImageVerificationReport, PdfTaskDraft, PdfVerificationReport, PptxTaskDraft,
+    DocxEmbeddedImageTask, DocxTaskDraft, DocxVerificationReport, Finding, ImagePreview, ImageRect,
+    ImageTaskDraft, ImageVerificationReport, PdfTaskDraft, PdfVerificationReport, PptxTaskDraft,
     PptxVerificationReport, TaskDraft, VerificationReport, XlsxTaskDraft, XlsxVerificationReport,
 };
 pub use pdf_workflow::{
-    PdfScanProgress, PdfWorkflowError, export_pdf_task_with_runtimes, scan_pdf_with_policy,
-    scan_pdf_with_policy_and_progress, verify_pdf_file_with_runtimes,
+    PdfScanProgress, PdfWorkflowError, export_pdf_task_with_runtimes, render_pdf_task_page_preview,
+    scan_pdf_with_policy, scan_pdf_with_policy_and_progress, verify_pdf_file_with_runtimes,
 };
 pub use policy::{PolicyConfig, PolicyError};
 pub use pptx_workflow::{

@@ -51,6 +51,9 @@ export type DesktopScanStatus =
   | "cancelling"
   | "review_required"
   | "ready_to_export"
+  | "exporting"
+  | "complete"
+  | "export_failed"
   | "blocked"
   | "cancelled";
 
@@ -60,6 +63,8 @@ export type DesktopScanStage =
   | "ocr"
   | "scanning_pages"
   | "complete"
+  | "exporting"
+  | "failed"
   | "cancelling"
   | "blocked"
   | "cancelled";
@@ -76,4 +81,40 @@ export interface DesktopScanSummary {
   diagnosticCount: number;
   canCancel: boolean;
   errorCode: string | null;
+  outputName: string | null;
+  verificationComplete: boolean;
+}
+
+export interface ImageRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface DesktopReviewFinding {
+  findingId: string;
+  groupId: string;
+  entityType: string;
+  confidence: number;
+  ocrConfidence: number;
+  maskRect: ImageRect;
+  selected: boolean;
+  reviewed: boolean;
+  manual: boolean;
+}
+
+export interface DesktopReviewPage {
+  id: string;
+  pageNumber: number;
+  pageCount: number;
+  width: number;
+  height: number;
+  imageDataUrl: string;
+  findings: DesktopReviewFinding[];
+}
+
+export interface DesktopReviewMutation {
+  summary: DesktopScanSummary;
+  findings: DesktopReviewFinding[];
 }

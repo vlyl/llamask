@@ -340,6 +340,11 @@ import, a Rust session-path registry, format and size preflight checks, and a
 task-list interface. PDF, PNG, and JPEG files now use the real `llamask-core`
 scanner on a controlled background worker with runtime integrity checks,
 path-free progress events, and cooperative cancellation. Sensitive scan drafts
-remain in Rust memory and are not sent to the WebView. The next increment is
-the page/image mask review interface and safe export. See the desktop
-architecture document for development details and safety boundaries.
+remain in Rust memory. The review workspace requests only a bounded, re-encoded
+page preview and geometry when the user opens a page; it can accept or retain
+findings, move and resize masks, add manual masks, and invoke the existing
+fail-closed safe export and residual rescan through a native save dialog. OCR
+plaintext and source paths are not returned to the WebView. The next increment
+connects text, Office, clipboard, and batch output to the same state machine.
+See the desktop architecture document for development details and safety
+boundaries.

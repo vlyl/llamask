@@ -8,16 +8,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, ImageFormat};
 use tempfile::{NamedTempFile, TempDir, tempdir};
 use thiserror::Error;
 
 use crate::image_workflow::{
-    ImageWorkflowError, export_image_task_with_runtimes, scan_image_with_policy,
-    verify_image_file_with_runtimes,
+    ImageWorkflowError, encode_preview_png, export_image_task_with_runtimes,
+    scan_image_with_policy, verify_image_file_with_runtimes,
 };
 use crate::model::{
-    DiagnosticSeverity, ImageFileKind, ImageFinding, PdfPageTask, PdfResidualFinding,
+    DiagnosticSeverity, ImageFileKind, ImageFinding, ImagePreview, PdfPageTask, PdfResidualFinding,
     PdfSourceMetadata, PdfTaskDraft, PdfVerificationReport, TaskDiagnostic,
 };
 use crate::policy::{PolicyConfig, PolicyError};
@@ -226,6 +226,50 @@ pub fn scan_pdf_with_policy_and_progress(
         pages,
         diagnostics,
         contains_sensitive_plaintext: true,
+    })
+}
+
+pub fn render_pdf_task_page_preview(
+    task: &PdfTaskDraft,
+    page_number: usize,
+) -> Result<ImagePreview, PdfWorkflowError> {
+    task.policy.validate()?;
+    if task.policy_id != task.policy.id {
+        return Err(PdfWorkflowError::PolicySnapshotMismatch);
+    }
+    let page = task
+        .pages
+        .iter()
+        .find(|page| page.page_number == page_number)
+        .ok_or(PdfWorkflowError::InvalidPageTask)?;
+    let source = fs::canonicalize(&task.source.path)?;
+    let source_bytes = read_pdf_limited(&source)?;
+    if sha256_hex(&source_bytes) != task.source.sha256 {
+        return Err(PdfWorkflowError::SourceChanged);
+    }
+    let work = tempdir()?;
+    let staged_pdf = stage_pdf(&work, &source_bytes)?;
+    let info = inspect_pdf(&staged_pdf, work.path())?;
+    validate_source_info(&info)?;
+    if info.pages != task.source.pages || page_number == 0 || page_number > info.pages {
+        return Err(PdfWorkflowError::SourceChanged);
+    }
+    let rendered = render_page(
+        &staged_pdf,
+        page_number,
+        task.source.raster_dpi,
+        work.path(),
+    )?;
+    let image = image::load_from_memory_with_format(&fs::read(rendered)?, ImageFormat::Png)?;
+    let (width, height) = image.dimensions();
+    if width != page.task.source.width || height != page.task.source.height {
+        return Err(PdfWorkflowError::SourceChanged);
+    }
+    let png_bytes = encode_preview_png(image)?;
+    Ok(ImagePreview {
+        width,
+        height,
+        png_bytes,
     })
 }
 
