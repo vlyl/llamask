@@ -264,6 +264,66 @@ pub struct ImageVerificationReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PdfSourceMetadata {
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub pages: usize,
+    pub raster_dpi: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfPageTask {
+    /// One-based page number in the source PDF.
+    pub page_number: usize,
+    /// Each page is an editable OCR image task at the fixed rasterization DPI.
+    pub task: ImageTaskDraft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfTaskDraft {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub policy_id: String,
+    pub policy: PolicyConfig,
+    pub source: PdfSourceMetadata,
+    pub ocr_runtime_id: String,
+    pub pages: Vec<PdfPageTask>,
+    #[serde(default)]
+    pub diagnostics: Vec<TaskDiagnostic>,
+    pub contains_sensitive_plaintext: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PdfResidualFinding {
+    pub page_number: usize,
+    pub line_index: usize,
+    pub entity_type: EntityType,
+    pub detector: String,
+    pub explanation_code: String,
+    pub ocr_rect: ImageRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PdfVerificationReport {
+    pub schema_version: u32,
+    pub passed: bool,
+    pub complete: bool,
+    pub checked_file: String,
+    pub sha256: String,
+    pub selected_findings: usize,
+    pub unreviewed_findings: usize,
+    pub target_residual_count: usize,
+    pub residual_findings: Vec<PdfResidualFinding>,
+    pub detectors_checked: Vec<String>,
+    pub pages_checked: usize,
+    /// Safe baseline: every output page is a single raster image.
+    pub rasterized_pages: usize,
+    pub structure_sanitized: bool,
+    pub diagnostics: Vec<TaskDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocxSourceMetadata {
     pub path: String,
     pub sha256: String,
@@ -415,6 +475,85 @@ pub struct XlsxVerificationReport {
     pub target_residual_count: usize,
     pub residual_findings: Vec<XlsxResidualFinding>,
     pub image_residual_findings: Vec<XlsxImageResidualFinding>,
+    pub detectors_checked: Vec<String>,
+    pub package_entries_checked: usize,
+    pub metadata_scrubbed: bool,
+    pub embedded_images_checked: usize,
+    pub diagnostics: Vec<TaskDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PptxSourceMetadata {
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub package_entries: usize,
+    pub slides: usize,
+    pub embedded_images: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PptxDocumentGraph {
+    pub schema_version: u32,
+    pub offset_unit: String,
+    pub source: PptxSourceMetadata,
+    pub parts: Vec<DocumentPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PptxEmbeddedImageTask {
+    /// OOXML package path, for example `ppt/media/image1.png`.
+    pub entry_name: String,
+    pub task: ImageTaskDraft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PptxTaskDraft {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub policy_id: String,
+    pub policy: PolicyConfig,
+    pub document: PptxDocumentGraph,
+    pub findings: Vec<Finding>,
+    #[serde(default)]
+    pub embedded_images: Vec<PptxEmbeddedImageTask>,
+    #[serde(default)]
+    pub diagnostics: Vec<TaskDiagnostic>,
+    pub contains_sensitive_plaintext: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PptxResidualFinding {
+    pub part_id: String,
+    pub start: usize,
+    pub end: usize,
+    pub entity_type: EntityType,
+    pub detector: String,
+    pub explanation_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PptxImageResidualFinding {
+    pub entry_name: String,
+    pub line_index: usize,
+    pub entity_type: EntityType,
+    pub detector: String,
+    pub explanation_code: String,
+    pub ocr_rect: ImageRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PptxVerificationReport {
+    pub schema_version: u32,
+    pub passed: bool,
+    pub complete: bool,
+    pub checked_file: String,
+    pub sha256: String,
+    pub selected_findings: usize,
+    pub unreviewed_findings: usize,
+    pub target_residual_count: usize,
+    pub residual_findings: Vec<PptxResidualFinding>,
+    pub image_residual_findings: Vec<PptxImageResidualFinding>,
     pub detectors_checked: Vec<String>,
     pub package_entries_checked: usize,
     pub metadata_scrubbed: bool,

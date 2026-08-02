@@ -30,6 +30,11 @@ evaluation/
     ├── generate_xlsx_fixture.mjs
     ├── prepare_xlsx_fixture.py
     ├── inspect_xlsx_fixture.mjs
+    ├── generate_pptx_fixture.mjs
+    ├── prepare_pptx_fixture.py
+    ├── inspect_pptx_fixture.mjs
+    ├── generate_pdf_fixture.py
+    ├── inspect_pdf_fixture.py
     ├── validate_dataset.py
     ├── run_rules_baseline.py
     ├── run_ocr_benchmark.py
@@ -114,6 +119,35 @@ node evaluation/scripts/inspect_xlsx_fixture.mjs \
 这三个 JavaScript 脚本需要开发环境中的 `@oai/artifact-tool`。提交的
 `fixtures/xlsx/comprehensive.xlsx` 不依赖该工具即可运行 Rust 回归测试，
 且只包含合成号码和邮箱。
+
+PPTX 合成回归同样先由演示文稿引擎生成，再确定性加入隐藏页、母版和版式
+边界；最后重新导入、逐页渲染并执行溢出检查：
+
+```bash
+node evaluation/scripts/generate_pptx_fixture.mjs \
+  /tmp/llamask-pptx-base.pptx /tmp/llamask-pptx-base-preview
+python3 evaluation/scripts/prepare_pptx_fixture.py \
+  /tmp/llamask-pptx-base.pptx fixtures/pptx/comprehensive.pptx
+node evaluation/scripts/inspect_pptx_fixture.mjs \
+  fixtures/pptx/comprehensive.pptx /tmp/llamask-pptx-preview
+```
+
+可在生成命令末尾增加一个 PNG 路径，构造嵌入图片 OCR 端到端样本。提交的
+`fixtures/pptx/comprehensive.pptx` 不含图片和真实信息，覆盖跨 run、表格、
+备注、批注及回复、隐藏页、母版、版式和外部超链接。
+
+PDF 合成回归样本覆盖原生文字、AcroForm、批注、链接、整页扫描图、不可见
+文字、元数据、附件和 JavaScript。生成器使用固定 PDF 时间信息；检查器只
+输出结构计数、对象类型和每页提取字符数，不打印敏感测试值：
+
+```bash
+python3 evaluation/scripts/generate_pdf_fixture.py fixtures/pdf/comprehensive.pdf
+python3 evaluation/scripts/inspect_pdf_fixture.py fixtures/pdf/comprehensive.pdf
+pdftoppm -png -r 150 fixtures/pdf/comprehensive.pdf /tmp/llamask-pdf-preview
+```
+
+提交的样本只含合成号码和邮箱。PDF 成品仍需逐页渲染目视检查，不能只依赖
+对象计数和 OCR 通过状态。
 
 ## 数据使用限制
 

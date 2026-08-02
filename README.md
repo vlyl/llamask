@@ -1,98 +1,139 @@
 # LlaMask
 
-LlaMask 是一个面向个人与组织的本地离线数据脱敏工具。它在不上传文件、不依赖云端服务的前提下，识别文本、Office 文档和图片中的敏感信息，供用户复核后生成脱敏副本。
+**English** | [简体中文](README.zh-CN.md)
 
-项目已完成首轮模型评测，并进入可运行原型开发。当前文本、图片、DOCX 和
-XLSX 纵向切片已经跑通：UTF-8 TXT/Markdown/标准输入、PNG/JPEG、DOCX
-正文与隐藏文字部件，以及 XLSX 单元格、公式、批注、隐藏工作表和嵌入图片
-均可执行规则和本地模型扫描，生成可编辑任务草稿、安全副本，并在落盘前
-独立复扫残留。
+[![CI](https://github.com/vlyl/llamask/actions/workflows/ci.yml/badge.svg)](https://github.com/vlyl/llamask/actions/workflows/ci.yml)
 
-## 核心原则
+> Current release: `v0.1.0-alpha.1`, a developer preview for validating the
+> redaction core, document adapters, and desktop shell. It does not yet include
+> signed installers for end users or ready-to-use model weights.
 
-- 完全离线：安装完成后无需联网，运行过程中不产生任何网络请求。
-- 原件安全：不覆盖源文件，只生成新副本。
-- 高召回优先：宁可多提示可疑内容，也尽量避免遗漏敏感信息。
-- 人机协同：高置信度结果可自动处理，模糊结果交由用户确认。
-- 可解释：每个检测结果都应说明类型、来源和判定依据。
-- 渐进学习：通过本地词典、规则、白名单和用户反馈适应使用习惯。
-- 格式保真：尽量保持原文档的排版、公式、样式和可编辑性。
+LlaMask is a local, offline data-redaction tool for individuals and
+organizations. It detects sensitive information in text, Office documents,
+PDFs, and images without uploading files or relying on cloud services, lets the
+user review the findings, and produces a redacted copy.
 
-## 设计文档
+The first model evaluation is complete and the project has entered runnable
+prototype development. End-to-end slices now work for text, images, DOCX,
+XLSX, PPTX, and PDF: UTF-8 TXT/Markdown/standard input, PNG/JPEG, visible and
+hidden Office text, notes, comments, masters, and embedded images can be
+scanned with rules and local models. PDFs support page-level OCR, editable
+masks, and safe full-page rasterized export. Every format produces an editable
+task draft and a safe copy, followed by an independent residual-data rescan
+before the output is committed to disk.
 
-- [产品需求文档](docs/01-product-requirements.md)
-- [技术架构](docs/02-technical-architecture.md)
-- [MVP 开发计划](docs/03-mvp-roadmap.md)
-- [产品决策记录](docs/04-product-decisions.md)
-- [策略配置模型](docs/05-policy-model.md)
-- [本地模型选型报告](docs/06-model-selection.md)
-- [模型评测与首发冻结结论](docs/07-model-benchmark-results.md)
-- [策略与本地模型进程协议](docs/08-policy-and-sidecar-protocol.md)
-- [DOCX 纵向切片与安全边界](docs/09-docx-vertical-slice.md)
-- [XLSX 纵向切片与安全边界](docs/10-xlsx-vertical-slice.md)
+## Core principles
 
-## 当前确定的首发范围
+- Fully offline: once installed, LlaMask works without an internet connection
+  and makes no network requests while running.
+- Source-file safety: source files are never overwritten; only new copies are
+  created.
+- Recall first: flagging extra suspicious content is preferable to silently
+  missing sensitive data.
+- Human in the loop: high-confidence findings can be handled automatically,
+  while ambiguous findings remain available for review.
+- Explainable results: every finding should report its type, origin, and reason.
+- Local adaptation: dictionaries, rules, allowlists, and user feedback adapt to
+  local habits without sending data elsewhere.
+- Format fidelity: preserve layout, formulas, styles, and editability whenever
+  this can be done safely.
 
-- 面向个人用户与企业用户的完全离线桌面应用。
-- 同时支持 Windows 和 macOS。
-- 支持 TXT、Markdown、剪贴板文本、DOCX、XLSX、PPTX、PDF 和常见图片。
-- 使用规则、敏感词典、校验算法、中文信息抽取、OCR/版面模型和 4B 本地多模态语言模型组合检测。
-- 自动应用策略并生成可编辑的脱敏草稿，允许用户撤销、修改和补充。
-- 允许按照策略跳过人工复核并批量导出，失败文件单独拦截。
-- 脱敏方法、自动处理阈值和敏感信息范围均可配置。
-- PDF 保真优先；无法确认安全删除时，对受影响页面使用安全栅格化兜底。
-- 一致替换的作用域和可逆恢复均可配置，默认采用任务内一致且不可逆。
-- 提供扫描、草稿复核、生成副本和二次校验的完整闭环。
-- 用户反馈只保存在本机，MVP 阶段不进行模型权重训练。
+## Design documents
 
-详细范围与验收条件以产品需求文档为准。
+The design documents are currently written in Chinese:
 
-## 当前可运行原型
+- [Product requirements](docs/01-product-requirements.md)
+- [Technical architecture](docs/02-technical-architecture.md)
+- [MVP roadmap](docs/03-mvp-roadmap.md)
+- [Product decision record](docs/04-product-decisions.md)
+- [Policy configuration model](docs/05-policy-model.md)
+- [Local model selection report](docs/06-model-selection.md)
+- [Model benchmark and first-release freeze](docs/07-model-benchmark-results.md)
+- [Policy and local-model sidecar protocol](docs/08-policy-and-sidecar-protocol.md)
+- [DOCX vertical slice and safety boundaries](docs/09-docx-vertical-slice.md)
+- [XLSX vertical slice and safety boundaries](docs/10-xlsx-vertical-slice.md)
+- [PPTX vertical slice and safety boundaries](docs/11-pptx-vertical-slice.md)
+- [PDF vertical slice and safety boundaries](docs/12-pdf-vertical-slice.md)
+- [Desktop MVP architecture and first milestone](docs/13-desktop-mvp-architecture.md)
 
-需要 Rust 1.97 或更高版本。在项目目录执行：
+## Target scope for the first release
+
+- A fully offline desktop application for both individuals and organizations.
+- Windows and macOS support.
+- TXT, Markdown, clipboard text, DOCX, XLSX, PPTX, PDF, and common image formats.
+- Detection combining deterministic rules, sensitive-term dictionaries,
+  validation algorithms, Chinese information extraction, OCR/layout models,
+  and a local 4B multimodal language model.
+- Automatic policy application with an editable redaction draft that users can
+  undo, modify, or extend.
+- Policy-controlled batch export without mandatory review, with unsafe files
+  blocked individually.
+- Configurable redaction methods, automatic-processing thresholds, and
+  sensitive-information categories.
+- Fidelity-first PDF handling, with safe rasterization of affected pages when
+  secure object-level removal cannot be guaranteed.
+- Configurable consistent replacement scope and reversible recovery; the
+  default is task-scoped consistency without recovery.
+- A complete scan, review, safe-copy generation, and independent verification
+  loop.
+- User feedback remains on the local machine. The MVP does not train model
+  weights.
+
+See the product requirements document for the complete scope and acceptance
+criteria.
+
+## Runnable prototype
+
+Rust 1.97 or later is required. From the repository root, run:
 
 ```bash
 cargo run -p llamask -- scan sample.txt --task task.json
-cargo run -p llamask -- export task.json --output sample_已脱敏.txt \
+cargo run -p llamask -- export task.json --output sample_redacted.txt \
   --runtimes config/runtimes/development-siamese.json
-cargo run -p llamask -- verify task.json sample_已脱敏.txt \
+cargo run -p llamask -- verify task.json sample_redacted.txt \
   --runtimes config/runtimes/development-siamese.json
 ```
 
-`task.json` 是可编辑的复核草稿。`selected` 控制是否脱敏，`replacement`
-控制替换内容；模型低置信结果的 `reviewed` 默认为 `false`，用户确认处理或
-保留后需要改为 `true`，否则导出会被拦截。原型不会覆盖原文件或已有输出
-文件；扫描后原文件发生变化时，导出会被拒绝。
+`task.json` is an editable review draft. `selected` controls whether a finding
+is redacted, while `replacement` controls its replacement value. Low-confidence
+model findings default to `reviewed: false`; the user must set `reviewed` to
+`true` after confirming either redaction or retention, otherwise export is
+blocked. The prototype never overwrites the source or an existing output file,
+and it rejects export if the source changes after scanning.
 
-策略还支持精确敏感词和白名单：
+Policies also support exact sensitive terms and allowlists:
 
 ```json
 {
   "exact_terms": [
-    { "value": "星海计划", "entity_type": "PROJECT_CODE" }
+    { "value": "Project Starsea", "entity_type": "PROJECT_CODE" }
   ],
   "allowlist": ["public@example.com"]
 }
 ```
 
-这两个字段加入完整策略 JSON 使用。精确敏感词使用原文精确匹配；白名单
-只取消与整个命中值完全相同的结果。
+Add these fields to a complete policy JSON document. Exact terms use literal
+source-text matching; allowlist entries suppress only findings whose entire
+matched value is identical.
 
-剪贴板兼容流程可以从标准输入建立任务，再把经过复扫的脱敏文本写到标准
-输出：
+The clipboard-compatible flow builds a task from standard input and writes
+independently rescanned redacted text to standard output:
 
 ```bash
 cargo run -p llamask -- scan-stdin --task clipboard-task.json
 cargo run -p llamask -- render clipboard-task.json
 ```
 
-命令行不会后台监听或自动读取系统剪贴板；桌面界面后续只在用户主动操作时
-调用同一套入口。
+The CLI does not monitor or read the system clipboard in the background. The
+desktop UI will invoke the same entry points only after an explicit user action.
 
-PNG/JPEG 图片流程使用本地 PP-OCRv6 small。普通规则模式约需 31 MB OCR
-权重；带人名、机构 AI 识别的轻量组合再加载 SiameseUIE。图片任务中的
-`mask_rect` 是可手动修改的最终像素矩形，`selected`/`reviewed` 控制处理与
-复核状态：
+### PNG and JPEG
+
+The image workflow uses local PP-OCRv6 small. Rule-only mode requires about
+31 MB of OCR weights; the lightweight AI combination also loads SiameseUIE for
+person and organization recognition. In an image task, `mask_rect` is the final
+pixel rectangle and can be edited manually. `selected` and `reviewed` control
+redaction and review state:
 
 ```bash
 cargo run -p llamask -- scan-image sample.png \
@@ -100,59 +141,73 @@ cargo run -p llamask -- scan-image sample.png \
   --runtimes config/runtimes/development-image-small.json
 
 cargo run -p llamask -- export-image image-task.json \
-  --output sample_已脱敏.png \
+  --output sample_redacted.png \
   --runtimes config/runtimes/development-image-small.json
 
-cargo run -p llamask -- verify-image image-task.json sample_已脱敏.png \
+cargo run -p llamask -- verify-image image-task.json sample_redacted.png \
   --runtimes config/runtimes/development-image-small.json
 ```
 
-核心会按 OCR 文本行估算命中片段矩形，并增加策略中的安全边距；跨行号码
-共享 `group_id` 并生成多个矩形。旋转或无法可靠细分的文字回退为整行框。
-导出使用实心色块，PNG 无损重编码并保留透明通道、JPEG 质量 95；手机照片
-的 EXIF 方向先烧录到像素，再去除源图片元数据；
-候选副本必须通过再次 OCR 和规则/可选模型复扫后才会原子落盘。输出格式
-必须与输入一致，且不会覆盖原件或已有文件。
+The core estimates matched-fragment rectangles from OCR text lines and adds the
+policy's safety margin. Numbers split across visual lines share a `group_id` and
+produce multiple rectangles. Rotated text, or text that cannot be segmented
+reliably, falls back to masking the whole line. Export uses solid masks: PNG is
+re-encoded losslessly with transparency preserved, while JPEG uses quality 95.
+Phone-photo EXIF orientation is baked into the pixels before source metadata is
+removed. A candidate copy must pass another OCR and rule/optional-model rescan
+before it is committed atomically. Output must use the same format as the input
+and cannot overwrite the source or an existing file.
 
-DOCX 流程扫描正文、表格、页眉页脚、脚注、尾注、批注、图表文字、
-修订删除文字和字段代码。跨多个 Word run 的一个命中会合并检测，再仅修改
-相交的文本节点；未命中的 XML 和媒体 entry 不从纯文本重建。导出同时清理
-作者、批注/修订身份、文档变量、自定义属性、外部超链接目标、缩略图以及
-ZIP 注释和时间戳：
+### DOCX
+
+The DOCX workflow scans body text, tables, headers and footers, footnotes,
+endnotes, comments, chart text, deleted revisions, and field codes. A finding
+split across multiple Word runs is detected as one value, while only the
+intersecting text nodes are changed. Unmatched XML and media entries are not
+rebuilt from plain text. Export also removes authorship, comment/revision
+identities, document variables, custom properties, external hyperlink targets,
+thumbnails, ZIP comments, and timestamps:
 
 ```bash
 cargo run -p llamask -- scan-docx sample.docx \
   --task docx-task.json
 
 cargo run -p llamask -- export-docx docx-task.json \
-  --output sample_已脱敏.docx
+  --output sample_redacted.docx
 
-cargo run -p llamask -- verify-docx docx-task.json sample_已脱敏.docx
+cargo run -p llamask -- verify-docx docx-task.json sample_redacted.docx
 ```
 
-DOCX 中的 PNG/JPEG 嵌入图片已经递归接入现有图片管线。扫描时提供含 OCR
-运行项的注册表，任务草稿会在 `embedded_images` 中保存逐图可编辑的遮罩
-子任务；导出时逐图去元数据重编码、替换 `word/media`，并对候选 DOCX 中
-的每张图片再次 OCR 复扫：
+Embedded PNG/JPEG images in DOCX files are recursively connected to the image
+pipeline. When scanning with an OCR runtime registry, the task draft stores an
+editable mask subtask for each image in `embedded_images`. During export, each
+image is re-encoded without metadata, replaced under `word/media`, and scanned
+again inside the candidate DOCX:
 
 ```bash
 cargo run -p llamask -- scan-docx sample.docx \
   --task docx-task.json \
   --runtimes config/runtimes/development-ocr-small.json
 cargo run -p llamask -- export-docx docx-task.json \
-  --output sample_已脱敏.docx \
+  --output sample_redacted.docx \
   --runtimes config/runtimes/development-ocr-small.json
 ```
 
-未提供 OCR 运行配置时仍可取得文字扫描草稿，但含图片文档会在导出时安全
-阻断并要求重新扫描。GIF、TIFF、SVG 等尚未支持的媒体格式，以及宏、
-ActiveX、OLE/嵌入对象仍会阻断。验证报告不包含残留原值；
-`complete: false` 表示策略启用的可选本地模型没有全部参与复扫。
+Without an OCR runtime, text findings are still available, but export of a
+document containing images fails closed and requires a new scan. Unsupported
+media such as GIF, TIFF, and SVG, as well as macros, ActiveX, OLE, and embedded
+objects, also block export. Verification reports never repeat residual source
+values. `complete: false` means that not every optional local model enabled by
+the policy participated in the rescan.
 
-XLSX 流程覆盖普通字符串、共享字符串、内联字符串、数字单元格、公式及
-缓存值、传统批注、页眉页脚、隐藏行列/工作表、定义名称、DrawingML 文字
-和 PNG/JPEG 嵌入图片。公式中的命中默认强制人工复核；确认处理后会删除
-公式并把整个单元格替换为普通文本，避免敏感字面量藏在公式或缓存中：
+### XLSX
+
+The XLSX workflow covers ordinary, shared, and inline strings; numeric cells;
+formulas and cached results; legacy comments; headers and footers; hidden rows,
+columns, and sheets; defined names; DrawingML text; and embedded PNG/JPEG
+images. Formula findings require review by default. Once redaction is confirmed,
+the formula is removed and the entire cell becomes plain text so a sensitive
+literal cannot remain in a formula or cache:
 
 ```bash
 cargo run -p llamask -- scan-xlsx sample.xlsx \
@@ -160,20 +215,82 @@ cargo run -p llamask -- scan-xlsx sample.xlsx \
   --runtimes config/runtimes/development-ocr-small.json
 
 cargo run -p llamask -- export-xlsx xlsx-task.json \
-  --output sample_已脱敏.xlsx \
+  --output sample_redacted.xlsx \
   --runtimes config/runtimes/development-ocr-small.json
 
-cargo run -p llamask -- verify-xlsx xlsx-task.json sample_已脱敏.xlsx \
+cargo run -p llamask -- verify-xlsx xlsx-task.json sample_redacted.xlsx \
   --runtimes config/runtimes/development-ocr-small.json
 ```
 
-选中的共享字符串单元格会转成保留原样式的内联字符串，失去引用的共享
-字符串原值会清空；批注作者和 Office/ZIP 隐私元数据也会清理。工作表名称
-暂不自动改名，命中后必须明确复核为保留。图表、透视缓存、外部数据连接、
-宏、ActiveX、嵌入对象和非 PNG/JPEG 媒体目前会安全阻断，避免生成看似
-成功但仍可能含残留的文件。详见 XLSX 安全边界文档。
+A selected shared-string cell is converted into an inline string while keeping
+its style, and unreferenced shared-string originals are cleared. Comment authors
+and Office/ZIP privacy metadata are also removed. Sheet names are not renamed
+automatically; a finding there must be explicitly reviewed for retention.
+Charts, pivot caches, external data connections, macros, ActiveX, embedded
+objects, and non-PNG/JPEG media currently fail closed so the tool never emits an
+apparently successful file that may still contain hidden data. See the XLSX
+safety-boundary document for details.
 
-生成和验证策略：
+### PPTX
+
+The PPTX workflow covers slide text boxes, tables, grouped shapes, text split
+across runs, speaker notes, modern comments and replies, hidden slides, slide
+masters, layouts, SmartArt text, and embedded PNG/JPEG images. Replacements are
+written directly into intersecting `a:t` nodes, preserving the slide structure
+and run styles:
+
+```bash
+cargo run -p llamask -- scan-pptx sample.pptx \
+  --task pptx-task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- export-pptx pptx-task.json \
+  --output sample_redacted.pptx \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- verify-pptx pptx-task.json sample_redacted.pptx \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+Export neutralizes comment authors and timestamps, removes drawing descriptions
+and custom data, and rewrites external hyperlinks to `about:blank`. Charts and
+caches, embedded workbooks, external data, macros, ActiveX, 3D models, audio,
+video, and non-PNG/JPEG media currently fail closed. See the PPTX
+safety-boundary document for details.
+
+### PDF
+
+The first PDF safety baseline renders every page with Poppler at a fixed 200 DPI
+and then reuses the image OCR and editable `mask_rect` task model. Export does
+not copy the source PDF object tree. Instead, it constructs a new PDF from the
+masked pages as JPEG images, so forms, annotations, links, attachments, scripts,
+hidden text, metadata, and incremental history do not enter the copy:
+
+```bash
+cargo run -p llamask -- scan-pdf sample.pdf \
+  --task pdf-task.json \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- export-pdf pdf-task.json \
+  --output sample_redacted.pdf \
+  --runtimes config/runtimes/development-ocr-small.json
+
+cargo run -p llamask -- verify-pdf pdf-task.json sample_redacted.pdf \
+  --runtimes config/runtimes/development-ocr-small.json
+```
+
+This mode preserves the page appearance and order but not text search/copy,
+vector editing, forms, or link interaction. Output must pass another page-level
+OCR scan, target-value check, and strict image-only PDF structure validation
+before it is committed atomically. The host or installer must currently provide
+`pdfinfo` and `pdftoppm`; `LLAMASK_PDFINFO` and `LLAMASK_PDFTOPPM` can point to
+bundled copies. Encrypted PDFs, files larger than 100 MiB, documents longer than
+200 pages, or documents exceeding 500 million rendered pixels fail closed. See
+the PDF safety-boundary document for details.
+
+### Policies and local models
+
+Generate and validate policies with:
 
 ```bash
 cargo run -p llamask -- policy init my-policy.json
@@ -181,13 +298,15 @@ cargo run -p llamask -- policy validate my-policy.json
 cargo run -p llamask -- runtimes verify config/runtimes/development-siamese.json
 ```
 
-扫描时可通过 `--policy` 选择策略，通过 `--runtimes` 选择本地模型运行
-注册表。模型未配置或可选模型失败时，任务草稿会保存明确的降级提示；
-策略将模型设为 `required` 时则直接拦截扫描。导出和验证再次传入同一运行
-注册表时，会在替换后重新运行规则与模型；报告中的 `complete` 表示全部
-已启用模型是否都参与了复扫，报告不会回显残留原文。
+Use `--policy` to choose a policy during scanning and `--runtimes` to choose a
+local-model runtime registry. If an optional model is missing or fails, the task
+draft records an explicit degradation warning. If the policy marks a model as
+`required`, scanning is blocked instead. Passing the same runtime registry to
+export and verification runs the rules and models again after replacement. The
+report's `complete` field indicates whether every enabled model participated in
+the rescan; the report never echoes residual source text.
 
-真实文本模型组合可以使用：
+A real text-model combination can be invoked with:
 
 ```bash
 target/release/llamask scan sample.txt \
@@ -196,12 +315,29 @@ target/release/llamask scan sample.txt \
   --runtimes config/runtimes/development-text-models-cpu.json
 ```
 
-当前任务草稿会包含原文、OCR 文本和命中值，应视为敏感文件妥善保管。真实
-SiameseUIE 和 Qwen Q4 已有开发 sidecar。SiameseUIE 默认路径已改为纯
-ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单记录
-路径相对冻结批量评测仍存在语义漂移，所以两者暂时都以未校准结果进入
-复核。图片轻量组合当前只接入 OCR、规则和 SiameseUIE；Qwen 要等持久模型
-进程完成后再进入图片默认链路。仓库内的 mock sidecar 只用于协议测试。
-图形界面、PPTX 和 PDF 适配器仍属于后续纵向切片。DOCX/XLSX 的下一个
-发布门槛是双平台 Microsoft Office/LibreOffice 真实文件回归，以及继续
-扩展 PNG/JPEG 之外的安全媒体支持。
+Task drafts currently contain source text, OCR text, and matched values and must
+therefore be handled as sensitive files. Development sidecars exist for real
+SiameseUIE and Qwen Q4 models. The default SiameseUIE path now uses pure ONNX
+and no longer depends on PyTorch, Transformers, or ModelScope. Qwen's
+single-record path still shows semantic drift relative to the frozen batch
+evaluation, so both models currently produce uncalibrated findings that require
+review. The lightweight image combination currently includes OCR, rules, and
+SiameseUIE; Qwen will join the default image pipeline only after a persistent
+model process is implemented. Mock sidecars in this repository are for protocol
+testing only.
+
+The graphical workflow and a PDF mode that preserves objects or adds a clean
+search layer remain future slices. The next release gate for the Office and PDF
+adapters is real-file regression testing on both platforms with Microsoft
+Office, LibreOffice, Keynote, and native PDF readers, plus expanded safe media
+support beyond PNG/JPEG.
+
+## Desktop status
+
+Desktop development has started under `apps/llamask-desktop`. It provides a
+minimal Tauri 2 + React/TypeScript window, restricted file selection, drag and
+drop import, a Rust session-path registry, format and size preflight checks, and
+a task-list interface. This milestone does not fabricate scan results: the
+“Start scan” action remains disabled until the background orchestrator is wired
+in. See the desktop architecture document for development details and safety
+boundaries.

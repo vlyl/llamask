@@ -2,11 +2,12 @@
 resolver = "2"
 members = [
     "apps/llamask-cli",
+    "apps/llamask-desktop/src-tauri",
     "crates/llamask-core",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.97"

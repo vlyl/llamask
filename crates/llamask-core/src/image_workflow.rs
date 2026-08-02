@@ -145,8 +145,9 @@ pub fn scan_image_with_policy(
                     ocr_confidence: line.score,
                     explanation_code: finding.explanation_code.clone(),
                     ocr_rect: line.bbox,
-                    mask_rect: expand_rect(
+                    mask_rect: expand_text_rect(
                         finding_rect,
+                        line.bbox,
                         policy.image_mask.safety_margin_px,
                         width,
                         height,
@@ -559,12 +560,34 @@ fn valid_rect(rect: ImageRect, width: u32, height: u32) -> bool {
     rect.x0 < rect.x1 && rect.y0 < rect.y1 && rect.x1 <= width && rect.y1 <= height
 }
 
-fn expand_rect(rect: ImageRect, margin: u32, width: u32, height: u32) -> ImageRect {
+/// OCR engines return line boxes rather than glyph boxes. Proportional fonts can
+/// otherwise leave the first or last glyph outside a character-ratio estimate,
+/// so add roughly one glyph of padding along the writing direction.
+fn expand_text_rect(
+    rect: ImageRect,
+    line_rect: ImageRect,
+    margin: u32,
+    width: u32,
+    height: u32,
+) -> ImageRect {
+    let line_width = line_rect.x1.saturating_sub(line_rect.x0);
+    let line_height = line_rect.y1.saturating_sub(line_rect.y0);
+    let (x_margin, y_margin) = if line_width >= line_height {
+        (
+            margin.saturating_add(line_height.saturating_add(1) / 2),
+            margin,
+        )
+    } else {
+        (
+            margin,
+            margin.saturating_add(line_width.saturating_add(1) / 2),
+        )
+    };
     ImageRect {
-        x0: rect.x0.saturating_sub(margin),
-        y0: rect.y0.saturating_sub(margin),
-        x1: rect.x1.saturating_add(margin).min(width),
-        y1: rect.y1.saturating_add(margin).min(height),
+        x0: rect.x0.saturating_sub(x_margin),
+        y0: rect.y0.saturating_sub(y_margin),
+        x1: rect.x1.saturating_add(x_margin).min(width),
+        y1: rect.y1.saturating_add(y_margin).min(height),
     }
 }
 
@@ -719,12 +742,18 @@ mod tests {
     use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
     use tempfile::tempdir;
 
-    use super::{approximate_finding_rect, decode_image, expand_rect, valid_rect};
+    use super::{approximate_finding_rect, decode_image, expand_text_rect, valid_rect};
     use crate::model::ImageRect;
 
     #[test]
     fn safety_margin_is_clamped_to_image_bounds() {
-        let rect = expand_rect(
+        let rect = expand_text_rect(
+            ImageRect {
+                x0: 2,
+                y0: 3,
+                x1: 98,
+                y1: 49,
+            },
             ImageRect {
                 x0: 2,
                 y0: 3,
@@ -745,6 +774,36 @@ mod tests {
             }
         );
         assert!(valid_rect(rect, 100, 50));
+    }
+
+    #[test]
+    fn text_mask_adds_one_glyph_of_horizontal_safety() {
+        let rect = expand_text_rect(
+            ImageRect {
+                x0: 100,
+                y0: 40,
+                x1: 300,
+                y1: 70,
+            },
+            ImageRect {
+                x0: 20,
+                y0: 40,
+                x1: 300,
+                y1: 70,
+            },
+            4,
+            400,
+            100,
+        );
+        assert_eq!(
+            rect,
+            ImageRect {
+                x0: 81,
+                y0: 36,
+                x1: 319,
+                y1: 74,
+            }
+        );
     }
 
     #[test]
