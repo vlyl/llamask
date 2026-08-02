@@ -18,12 +18,14 @@ import type {
   DesktopCapabilities,
   DesktopCommandError,
   DesktopFileKind,
+  DesktopRuntimeStatus,
+  DesktopScanSummary,
   ImportedFile,
 } from "./types";
 
 const browserCapabilities: DesktopCapabilities = {
-  appVersion: "0.1.0",
-  coreVersion: "0.1.0",
+  appVersion: "0.1.0-alpha.1",
+  coreVersion: "0.1.0-alpha.1",
   defaultPolicyId: "default-high-recall",
   offlineOnly: true,
   maxImportFiles: 200,
@@ -38,7 +40,18 @@ const browserCapabilities: DesktopCapabilities = {
     "jpg",
     "jpeg",
   ],
+  scanExtensions: ["pdf", "png", "jpg", "jpeg"],
   milestone: "browser-preview",
+};
+
+const browserRuntimeStatus: DesktopRuntimeStatus = {
+  policyReady: true,
+  runtimeRegistryReady: false,
+  ocrReady: false,
+  ocrRuntimeId: null,
+  pdfToolsReady: false,
+  scanReady: false,
+  statusCode: "BROWSER_PREVIEW",
 };
 
 const kindLabels: Record<DesktopFileKind, string> = {
@@ -54,9 +67,41 @@ const kindLabels: Record<DesktopFileKind, string> = {
 const reasonLabels: Record<string, string> = {
   READY: "待扫描",
   ALREADY_IMPORTED: "已在任务中",
+  SCAN_NOT_AVAILABLE: "后续增量接入",
   UNSUPPORTED_EXTENSION: "暂不支持该格式",
   FILE_TOO_LARGE: "超过安全大小限制",
   FILE_UNREADABLE: "文件无法读取",
+};
+
+const scanStatusLabels: Record<DesktopScanSummary["status"], string> = {
+  queued: "等待扫描",
+  scanning: "正在扫描",
+  cancelling: "正在取消",
+  review_required: "需要复核",
+  ready_to_export: "可安全导出",
+  blocked: "扫描已阻断",
+  cancelled: "已取消",
+};
+
+const scanErrorLabels: Record<string, string> = {
+  RUNTIME_REGISTRY_MISSING: "未找到本地 OCR 运行配置",
+  RUNTIME_REGISTRY_INVALID: "本地 OCR 运行配置无效",
+  RUNTIME_ASSET_INVALID: "OCR 模型或运行文件完整性校验失败",
+  OCR_RUNTIME_MISSING: "本地 OCR 未安装",
+  PDF_TOOLS_MISSING: "PDF 本地工具未安装",
+  PDF_LIMIT_EXCEEDED: "PDF 超过安全处理限制",
+  INVALID_PDF: "PDF 结构无效",
+  ENCRYPTED_PDF_UNSUPPORTED: "加密 PDF 需要先生成可信解密副本",
+  PDF_TOOL_FAILED: "PDF 本地工具执行失败",
+  PDF_READ_FAILED: "PDF 无法安全读取",
+  IMAGE_LIMIT_EXCEEDED: "图片超过安全处理限制",
+  UNSUPPORTED_IMAGE: "图片格式不受支持",
+  OCR_FAILED: "本地 OCR 执行失败",
+  IMAGE_READ_FAILED: "图片无法安全读取",
+  POLICY_INVALID: "默认脱敏策略无效",
+  SCAN_WORKER_FAILED: "本地扫描任务异常结束",
+  IMAGE_SCAN_FAILED: "图片扫描未完成",
+  PDF_SCAN_FAILED: "PDF 扫描未完成",
 };
 
 interface DesktopImportEvent {
@@ -90,10 +135,36 @@ function normalizeError(error: unknown): DesktopCommandError {
   };
 }
 
+function scanDetail(scan: DesktopScanSummary) {
+  if (scan.errorCode) {
+    return scanErrorLabels[scan.errorCode] ?? "扫描被安全阻断，请检查运行环境。";
+  }
+  if (scan.status === "scanning" && scan.totalUnits > 0) {
+    return `${scan.completedUnits}/${scan.totalUnits} ${scan.totalUnits > 1 ? "页" : "步"}`;
+  }
+  if (scan.status === "review_required") {
+    return `${scan.findingGroups} 个结果 · ${scan.unreviewedGroups} 个待复核`;
+  }
+  if (scan.status === "ready_to_export") {
+    return `${scan.findingGroups} 个结果已完成自动确认`;
+  }
+  return scanStatusLabels[scan.status];
+}
+
+function scanPillClass(scan: DesktopScanSummary | undefined, file: ImportedFile) {
+  if (!scan) return file.ready && file.scanSupported ? "ready" : "blocked";
+  if (["blocked", "cancelled"].includes(scan.status)) return "blocked";
+  if (["review_required", "ready_to_export"].includes(scan.status)) return "complete";
+  return "scanning";
+}
+
 function App() {
   const [capabilities, setCapabilities] = useState(browserCapabilities);
+  const [runtimeStatus, setRuntimeStatus] = useState(browserRuntimeStatus);
   const [files, setFiles] = useState<ImportedFile[]>([]);
+  const [scans, setScans] = useState<Map<string, DesktopScanSummary>>(new Map());
   const [busy, setBusy] = useState(false);
+  const [scanStarting, setScanStarting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const tauriRuntime = isTauriRuntime();
@@ -103,6 +174,19 @@ function App() {
     invoke<DesktopCapabilities>("desktop_capabilities")
       .then(setCapabilities)
       .catch((error: unknown) => setNotice(normalizeError(error).message));
+    invoke<DesktopRuntimeStatus>("desktop_runtime_status")
+      .then(setRuntimeStatus)
+      .catch(() =>
+        setRuntimeStatus({
+          ...browserRuntimeStatus,
+          statusCode: "RUNTIME_STATUS_FAILED",
+        }),
+      );
+    invoke<DesktopScanSummary[]>("scan_task_summaries")
+      .then((summaries) =>
+        setScans(new Map(summaries.map((summary) => [summary.id, summary]))),
+      )
+      .catch(() => undefined);
   }, [tauriRuntime]);
 
   const mergeImportedFiles = useCallback((imported: ImportedFile[]) => {
@@ -135,6 +219,18 @@ function App() {
         else dispose();
       })
       .catch(() => setNotice("拖放导入未启用，仍可通过文件选择器导入。"));
+    listen<DesktopScanSummary>("desktop-scan-progress", (event) => {
+      setScans((current) => {
+        const next = new Map(current);
+        next.set(event.payload.id, event.payload);
+        return next;
+      });
+    })
+      .then((dispose) => {
+        if (active) unlisten.push(dispose);
+        else dispose();
+      })
+      .catch(() => setNotice("扫描状态监听未启用，请重新启动应用。"));
     getCurrentWindow()
       .onDragDropEvent((event) => {
         if (event.payload.type === "over") setDragging(true);
@@ -181,6 +277,11 @@ function App() {
       }
     }
     setFiles((current) => current.filter((file) => file.id !== id));
+    setScans((current) => {
+      const next = new Map(current);
+      next.delete(id);
+      return next;
+    });
   };
 
   const clearFiles = async () => {
@@ -193,14 +294,50 @@ function App() {
       }
     }
     setFiles([]);
+    setScans(new Map());
+  };
+
+  const startScanning = async () => {
+    if (!tauriRuntime) {
+      setNotice("浏览器预览不会读取或扫描本地文件；请在 Tauri 窗口中运行。");
+      return;
+    }
+    setScanStarting(true);
+    setNotice(null);
+    try {
+      const summaries = await invoke<DesktopScanSummary[]>("start_registered_scans");
+      setScans((current) => {
+        const next = new Map(current);
+        for (const summary of summaries) next.set(summary.id, summary);
+        return next;
+      });
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    } finally {
+      setScanStarting(false);
+    }
+  };
+
+  const cancelScanning = async (id: string) => {
+    if (!tauriRuntime) return;
+    try {
+      await invoke<boolean>("cancel_scan", { id });
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    }
   };
 
   const summary = useMemo(() => {
     const ready = files.filter((file) => file.ready).length;
     const blocked = files.length - ready;
+    const scannable = files.filter((file) => file.ready && file.scanSupported).length;
+    const active = [...scans.values()].filter((scan) => scan.canCancel).length;
+    const completed = [...scans.values()].filter((scan) =>
+      ["review_required", "ready_to_export"].includes(scan.status),
+    ).length;
     const bytes = files.reduce((total, file) => total + file.sizeBytes, 0);
-    return { ready, blocked, bytes };
-  }, [files]);
+    return { ready, blocked, scannable, active, completed, bytes };
+  }, [files, scans]);
 
   return (
     <div className="app-shell">
@@ -242,14 +379,20 @@ function App() {
                 <small>{files.length > 0 ? "已建立本地引用" : "选择或拖入文件"}</small>
               </div>
             </li>
-            <li>
+            <li className={summary.active > 0 ? "active" : summary.completed > 0 ? "done" : ""}>
               <span>2</span>
               <div>
                 <strong>扫描识别</strong>
-                <small>下一里程碑</small>
+                <small>
+                  {summary.active > 0
+                    ? `${summary.active} 个文件正在本机处理`
+                    : summary.completed > 0
+                      ? `${summary.completed} 个文件扫描完成`
+                      : "PDF 与图片已接入"}
+                </small>
               </div>
             </li>
-            <li>
+            <li className={summary.completed > 0 ? "active" : ""}>
               <span>3</span>
               <div>
                 <strong>复核调整</strong>
@@ -279,13 +422,14 @@ function App() {
       <main className="workspace">
         <header className="workspace-header">
           <div>
-            <p className="eyebrow">桌面端 MVP · 文件导入</p>
+            <p className="eyebrow">桌面端 MVP · 本地扫描</p>
             <h1>新建脱敏任务</h1>
             <p>导入文件后，LlaMask 将在本机完成识别、复核与安全导出。</p>
           </div>
           <div className="header-actions">
-            <span className="runtime-chip">
+            <span className={`runtime-chip ${runtimeStatus.scanReady ? "" : "warning"}`}>
               <span /> Core {capabilities.coreVersion}
+              {runtimeStatus.scanReady ? ` · OCR ${runtimeStatus.ocrRuntimeId}` : " · OCR 未就绪"}
             </span>
             <button
               className="primary-button compact"
@@ -318,7 +462,9 @@ function App() {
           <div>
             <h2>{dragging ? "松开即可加入任务" : "拖入需要脱敏的文件"}</h2>
             <p>
-              支持 DOCX、XLSX、PPTX、PDF、图片、TXT 和 Markdown，单次最多 {capabilities.maxImportFiles} 个
+              可导入 DOCX、XLSX、PPTX、PDF、图片、TXT 和 Markdown；当前扫描增量支持{" "}
+              {capabilities.scanExtensions.map((extension) => extension.toUpperCase()).join("、")}，单次最多{" "}
+              {capabilities.maxImportFiles} 个
             </p>
           </div>
           <button className="secondary-button" type="button" onClick={() => void chooseFiles()} disabled={busy}>
@@ -331,7 +477,9 @@ function App() {
             <div className="panel-header">
               <div>
                 <h2>任务文件</h2>
-                <span>{summary.ready} 个可扫描 · {summary.blocked} 个需要处理</span>
+                <span>
+                  {summary.scannable} 个可立即扫描 · {summary.active} 个处理中 · {summary.blocked} 个导入受阻
+                </span>
               </div>
               <button className="text-button danger" type="button" onClick={() => void clearFiles()}>
                 <TrashIcon /> 清空
@@ -339,28 +487,43 @@ function App() {
             </div>
 
             <div className="file-list">
-              {files.map((file) => (
-                <article className={`file-row ${file.ready ? "" : "blocked"}`} key={file.id}>
-                  <div className={`file-badge kind-${file.kind}`}>
-                    {file.extension ? file.extension.slice(0, 4).toUpperCase() : "?"}
-                  </div>
-                  <div className="file-copy">
-                    <strong title={file.displayName}>{file.displayName}</strong>
-                    <span>{kindLabels[file.kind]} · {formatBytes(file.sizeBytes)}</span>
-                  </div>
-                  <span className={`status-pill ${file.ready ? "ready" : "blocked"}`}>
-                    {reasonLabels[file.reasonCode] ?? "需要检查"}
-                  </span>
-                  <button
-                    className="icon-button"
-                    type="button"
-                    onClick={() => void removeFile(file.id)}
-                    aria-label={`移除 ${file.displayName}`}
+              {files.map((file) => {
+                const scan = scans.get(file.id);
+                return (
+                  <article
+                    className={`file-row ${file.ready ? "" : "blocked"} ${scan?.canCancel ? "active" : ""}`}
+                    key={file.id}
                   >
-                    <CloseIcon />
-                  </button>
-                </article>
-              ))}
+                    <div className={`file-badge kind-${file.kind}`}>
+                      {file.extension ? file.extension.slice(0, 4).toUpperCase() : "?"}
+                    </div>
+                    <div className="file-copy">
+                      <strong title={file.displayName}>{file.displayName}</strong>
+                      <span>
+                        {kindLabels[file.kind]} · {formatBytes(file.sizeBytes)}
+                        {scan ? ` · ${scanDetail(scan)}` : ""}
+                      </span>
+                    </div>
+                    <span className={`status-pill ${scanPillClass(scan, file)}`}>
+                      {scan
+                        ? scanStatusLabels[scan.status]
+                        : reasonLabels[file.reasonCode] ?? "需要检查"}
+                    </span>
+                    <button
+                      className="icon-button"
+                      type="button"
+                      onClick={() =>
+                        scan?.canCancel
+                          ? void cancelScanning(file.id)
+                          : void removeFile(file.id)
+                      }
+                      aria-label={`${scan?.canCancel ? "取消扫描" : "移除"} ${file.displayName}`}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </article>
+                );
+              })}
             </div>
           </section>
         ) : (
@@ -390,9 +553,25 @@ function App() {
             <span>策略：{capabilities.defaultPolicyId}</span>
           </div>
           <div className="next-action">
-            <span>当前提交先完成安全导入边界</span>
-            <button className="primary-button" type="button" disabled>
-              开始扫描
+            <span>
+              {!runtimeStatus.scanReady
+                ? "请先完成本地 OCR 资源安装与完整性校验"
+                : summary.scannable === 0
+                  ? "请导入 PDF、PNG 或 JPEG"
+                  : "扫描任务和敏感结果只保存在 Rust 进程内"}
+            </span>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void startScanning()}
+              disabled={
+                scanStarting ||
+                summary.active > 0 ||
+                summary.scannable === 0 ||
+                !runtimeStatus.scanReady
+              }
+            >
+              {scanStarting ? "正在启动…" : summary.active > 0 ? "扫描进行中" : "开始扫描"}
               <ChevronRightIcon />
             </button>
           </div>

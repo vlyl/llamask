@@ -130,6 +130,14 @@ pub enum PdfWorkflowError {
     UnreviewedFindings(usize),
     #[error("PDF 安全结构或残留复扫失败，发现 {0} 个未处理结果")]
     VerificationFailed(usize),
+    #[error("PDF 扫描已取消")]
+    ScanCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PdfScanProgress {
+    pub completed_pages: usize,
+    pub total_pages: usize,
 }
 
 #[derive(Debug)]
@@ -151,6 +159,16 @@ pub fn scan_pdf_with_policy(
     runtimes: &RuntimeRegistry,
     ocr_runtime_id: &str,
 ) -> Result<PdfTaskDraft, PdfWorkflowError> {
+    scan_pdf_with_policy_and_progress(path, policy, runtimes, ocr_runtime_id, |_| true)
+}
+
+pub fn scan_pdf_with_policy_and_progress(
+    path: &Path,
+    policy: &PolicyConfig,
+    runtimes: &RuntimeRegistry,
+    ocr_runtime_id: &str,
+    mut on_progress: impl FnMut(PdfScanProgress) -> bool,
+) -> Result<PdfTaskDraft, PdfWorkflowError> {
     policy.validate()?;
     let canonical = fs::canonicalize(path)?;
     let source_bytes = read_pdf_limited(&canonical)?;
@@ -159,6 +177,13 @@ pub fn scan_pdf_with_policy(
     let staged_pdf = stage_pdf(&work, &source_bytes)?;
     let info = inspect_pdf(&staged_pdf, work.path())?;
     validate_source_info(&info)?;
+
+    if !on_progress(PdfScanProgress {
+        completed_pages: 0,
+        total_pages: info.pages,
+    }) {
+        return Err(PdfWorkflowError::ScanCancelled);
+    }
 
     let mut diagnostics = source_diagnostics(&source_bytes, &info);
     let mut pages = Vec::with_capacity(info.pages);
@@ -176,6 +201,12 @@ pub fn scan_pdf_with_policy(
         task.task_id = format!("pdf-page-{page_number:04}-{}", &source_sha256[..12]);
         task.source.path = format!("pdf://{}#page={page_number}", canonical.to_string_lossy());
         pages.push(PdfPageTask { page_number, task });
+        if !on_progress(PdfScanProgress {
+            completed_pages: page_number,
+            total_pages: info.pages,
+        }) {
+            return Err(PdfWorkflowError::ScanCancelled);
+        }
     }
     deduplicate_diagnostics(&mut diagnostics);
 

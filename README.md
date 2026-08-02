@@ -334,10 +334,12 @@ support beyond PNG/JPEG.
 
 ## Desktop status
 
-Desktop development has started under `apps/llamask-desktop`. It provides a
-minimal Tauri 2 + React/TypeScript window, restricted file selection, drag and
-drop import, a Rust session-path registry, format and size preflight checks, and
-a task-list interface. This milestone does not fabricate scan results: the
-“Start scan” action remains disabled until the background orchestrator is wired
-in. See the desktop architecture document for development details and safety
-boundaries.
+Desktop development lives under `apps/llamask-desktop`. It provides a minimal
+Tauri 2 + React/TypeScript window, restricted file selection, drag and drop
+import, a Rust session-path registry, format and size preflight checks, and a
+task-list interface. PDF, PNG, and JPEG files now use the real `llamask-core`
+scanner on a controlled background worker with runtime integrity checks,
+path-free progress events, and cooperative cancellation. Sensitive scan drafts
+remain in Rust memory and are not sent to the WebView. The next increment is
+the page/image mask review interface and safe export. See the desktop
+architecture document for development details and safety boundaries.
