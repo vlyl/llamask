@@ -24,8 +24,8 @@ pub use model::{
     PptxVerificationReport, TaskDraft, VerificationReport, XlsxTaskDraft, XlsxVerificationReport,
 };
 pub use pdf_workflow::{
-    PdfWorkflowError, export_pdf_task_with_runtimes, scan_pdf_with_policy,
-    verify_pdf_file_with_runtimes,
+    PdfScanProgress, PdfWorkflowError, export_pdf_task_with_runtimes, scan_pdf_with_policy,
+    scan_pdf_with_policy_and_progress, verify_pdf_file_with_runtimes,
 };
 pub use policy::{PolicyConfig, PolicyError};
 pub use pptx_workflow::{

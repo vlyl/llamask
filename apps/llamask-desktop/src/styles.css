@@ -301,6 +301,16 @@ button:focus-visible {
   border-radius: 50%;
 }
 
+.runtime-chip.warning {
+  color: #7d5b24;
+  background: #fff8e7;
+  border-color: #ead8ad;
+}
+
+.runtime-chip.warning > span {
+  background: #d69a35;
+}
+
 .primary-button,
 .secondary-button,
 .text-button,
@@ -486,6 +496,10 @@ button:focus-visible {
   background: #fafcfb;
 }
 
+.file-row.active {
+  background: #f3faf7;
+}
+
 .file-badge {
   display: grid;
   width: 40px;
@@ -561,6 +575,16 @@ button:focus-visible {
 .status-pill.blocked {
   color: #9b4e42;
   background: #f9e8e5;
+}
+
+.status-pill.scanning {
+  color: #3b6093;
+  background: #e8f0fb;
+}
+
+.status-pill.complete {
+  color: #176b51;
+  background: #dff4e9;
 }
 
 .icon-button {

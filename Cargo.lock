@@ -1823,6 +1823,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "llamask-core",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
