@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   ChevronRightIcon,
+  ClipboardIcon,
   CloseIcon,
   FileIcon,
   FolderIcon,
@@ -87,7 +88,7 @@ const scanStatusLabels: Record<DesktopScanSummary["status"], string> = {
   review_required: "需要复核",
   ready_to_export: "可安全导出",
   exporting: "正在安全导出",
-  complete: "安全副本已生成",
+  complete: "处理完成",
   export_failed: "导出已阻断",
   blocked: "扫描已阻断",
   cancelled: "已取消",
@@ -129,6 +130,8 @@ const scanErrorLabels: Record<string, string> = {
   IMAGE_EXPORT_FAILED: "图片安全导出未完成",
   PDF_EXPORT_FAILED: "PDF 安全导出未完成",
   TEXT_EXPORT_FAILED: "文本安全导出未完成",
+  CLIPBOARD_WRITE_FAILED: "无法把脱敏结果写入系统剪贴板",
+  SCAN_SOURCE_INVALID: "任务来源与文件类型不匹配",
 };
 
 interface DesktopImportEvent {
@@ -176,6 +179,11 @@ function scanDetail(scan: DesktopScanSummary) {
     return `${scan.findingGroups} 个结果已完成自动确认`;
   }
   if (scan.status === "complete") {
+    if (scan.outputKind === "clipboard") {
+      return scan.verificationComplete
+        ? "已复制 · 完整复检"
+        : "已复制 · 基础复检";
+    }
     return scan.outputName
       ? `${scan.outputName} · ${scan.verificationComplete ? "完整复检" : "基础复检"}`
       : "安全副本已生成";
@@ -234,7 +242,7 @@ function App() {
       return [...byId.values()];
     });
     if (duplicateCount > 0) {
-      setNotice(`${duplicateCount} 个文件已经在当前任务中。`);
+      setNotice(`${duplicateCount} 个项目已经在当前任务中。`);
     }
   }, []);
 
@@ -261,6 +269,14 @@ function App() {
         return next;
       });
       if (event.payload.status === "complete") {
+        if (event.payload.outputKind === "clipboard") {
+          setNotice(
+            event.payload.verificationComplete
+              ? "脱敏文本已复制到剪贴板，并通过完整残留复扫。"
+              : "脱敏文本已复制到剪贴板；适用规则已复扫通过，但可选语义模型未参与复扫。",
+          );
+          return;
+        }
         const output = event.payload.outputName
           ? `安全副本 ${event.payload.outputName}`
           : "安全副本";
@@ -311,6 +327,26 @@ function App() {
     try {
       const imported = await invoke<ImportedFile[]>("pick_files");
       mergeImportedFiles(imported);
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importClipboard = async () => {
+    if (!tauriRuntime) {
+      setNotice("浏览器预览不会读取系统剪贴板；请在 Tauri 窗口中运行。");
+      return;
+    }
+    setBusy(true);
+    setNotice(null);
+    try {
+      const imported = await invoke<ImportedFile>("import_clipboard_text");
+      mergeImportedFiles([imported]);
+      if (!imported.duplicate) {
+        setNotice("已在本机读取剪贴板文本；原文只保存在当前任务内存中。");
+      }
     } catch (error) {
       setNotice(normalizeError(error).message);
     } finally {
@@ -470,16 +506,25 @@ function App() {
     }
   };
 
-  const exportScan = async (id: string) => {
+  const deliverScan = async (id: string) => {
     if (!tauriRuntime) {
-      setNotice("浏览器预览不会写入本地副本；请在 Tauri 窗口中运行。");
+      setNotice("浏览器预览不会写入本地副本或系统剪贴板；请在 Tauri 窗口中运行。");
       return;
     }
     setReviewBusy(true);
     setNotice(null);
     try {
-      const started = await invoke<boolean>("choose_and_export_scan", { id });
-      if (started) setNotice("正在本机生成安全副本并执行残留复扫…");
+      const file = files.find((candidate) => candidate.id === id);
+      const clipboardTask = file?.sourceKind === "clipboard";
+      const command = clipboardTask ? "copy_redacted_clipboard" : "choose_and_export_scan";
+      const started = await invoke<boolean>(command, { id });
+      if (started) {
+        setNotice(
+          clipboardTask
+            ? "正在本机生成脱敏文本并执行残留复扫；通过后才会写入剪贴板…"
+            : "正在本机生成安全副本并执行残留复扫…",
+        );
+      }
     } catch (error) {
       setNotice(normalizeError(error).message);
     } finally {
@@ -564,8 +609,8 @@ function App() {
             <li className={files.length > 0 ? "done" : "active"}>
               <span>1</span>
               <div>
-                <strong>导入文件</strong>
-                <small>{files.length > 0 ? "已建立本地引用" : "选择或拖入文件"}</small>
+                <strong>导入内容</strong>
+                <small>{files.length > 0 ? "已建立本地任务" : "选择文件或读取剪贴板"}</small>
               </div>
             </li>
             <li className={summary.active > 0 ? "active" : summary.completed > 0 ? "done" : ""}>
@@ -574,9 +619,9 @@ function App() {
                 <strong>扫描识别</strong>
                 <small>
                   {summary.active > 0
-                    ? `${summary.active} 个文件正在本机处理`
+                    ? `${summary.active} 个项目正在本机处理`
                     : summary.completed > 0
-                      ? `${summary.completed} 个文件扫描完成`
+                      ? `${summary.completed} 个项目扫描完成`
                       : "文本、PDF 与图片已接入"}
                 </small>
               </div>
@@ -613,7 +658,7 @@ function App() {
           <div>
             <p className="eyebrow">桌面端 MVP · 复核与安全导出</p>
             <h1>新建脱敏任务</h1>
-            <p>导入文件后，LlaMask 将在本机完成识别、复核与安全导出。</p>
+            <p>导入文件或剪贴板文本后，LlaMask 将在本机完成识别、复核与安全输出。</p>
           </div>
           <div className="header-actions">
             <span className={`runtime-chip ${runtimeStatus.ocrReady ? "" : "warning"}`}>
@@ -624,6 +669,15 @@ function App() {
                   ? " · 文本规则可用 · OCR 未就绪"
                   : " · 运行环境未就绪"}
             </span>
+            <button
+              className="secondary-button compact"
+              type="button"
+              onClick={() => void importClipboard()}
+              disabled={busy}
+            >
+              <ClipboardIcon />
+              读取剪贴板
+            </button>
             <button
               className="primary-button compact"
               type="button"
@@ -647,7 +701,7 @@ function App() {
 
         <section
           className={`drop-zone ${dragging ? "dragging" : ""} ${files.length > 0 ? "compact" : ""}`}
-          aria-label="文件导入区"
+          aria-label="内容导入区"
         >
           <div className="drop-icon">
             <FolderIcon width={30} height={30} />
@@ -660,16 +714,21 @@ function App() {
               {capabilities.maxImportFiles} 个
             </p>
           </div>
-          <button className="secondary-button" type="button" onClick={() => void chooseFiles()} disabled={busy}>
-            {busy ? "正在读取…" : "选择文件"}
-          </button>
+          <div className="import-actions">
+            <button className="secondary-button" type="button" onClick={() => void importClipboard()} disabled={busy}>
+              <ClipboardIcon /> 从剪贴板读取
+            </button>
+            <button className="secondary-button" type="button" onClick={() => void chooseFiles()} disabled={busy}>
+              {busy ? "正在读取…" : "选择文件"}
+            </button>
+          </div>
         </section>
 
         {files.length > 0 ? (
           <section className="task-panel">
             <div className="panel-header">
               <div>
-                <h2>任务文件</h2>
+                <h2>任务内容</h2>
                 <span>
                   {summary.scannable} 个可立即扫描 · {summary.active} 个处理中 · {summary.blocked} 个导入受阻
                 </span>
@@ -692,13 +751,17 @@ function App() {
                     className={`file-row ${file.ready ? "" : "blocked"} ${scan?.canCancel ? "active" : ""}`}
                     key={file.id}
                   >
-                    <div className={`file-badge kind-${file.kind}`}>
-                      {file.extension ? file.extension.slice(0, 4).toUpperCase() : "?"}
+                    <div className={`file-badge kind-${file.kind} source-${file.sourceKind}`}>
+                      {file.sourceKind === "clipboard"
+                        ? "CLIP"
+                        : file.extension
+                          ? file.extension.slice(0, 4).toUpperCase()
+                          : "?"}
                     </div>
                     <div className="file-copy">
                       <strong title={file.displayName}>{file.displayName}</strong>
                       <span>
-                        {kindLabels[file.kind]} · {formatBytes(file.sizeBytes)}
+                        {file.sourceKind === "clipboard" ? "剪贴板文本" : kindLabels[file.kind]} · {formatBytes(file.sizeBytes)}
                         {scan ? ` · ${scanDetail(scan)}` : ""}
                       </span>
                     </div>
@@ -727,9 +790,9 @@ function App() {
                             className="secondary-button compact-action"
                             type="button"
                             disabled={reviewBusy || scan.status === "exporting"}
-                            onClick={() => void exportScan(file.id)}
+                            onClick={() => void deliverScan(file.id)}
                           >
-                            导出
+                            {file.sourceKind === "clipboard" ? "复制" : "导出"}
                           </button>
                         )}
                     </div>
@@ -773,7 +836,7 @@ function App() {
 
         <footer className="action-bar">
           <div className="task-summary">
-            <span>{files.length} 个文件</span>
+            <span>{files.length} 个项目</span>
             <span>{formatBytes(summary.bytes)}</span>
             <span>策略：{capabilities.defaultPolicyId}</span>
           </div>
@@ -782,7 +845,7 @@ function App() {
               {!scanRuntimeReady
                 ? "请完成默认策略或本地 OCR 资源完整性检查"
                 : summary.scannable === 0
-                  ? "请导入 TXT、Markdown、PDF、PNG 或 JPEG"
+                  ? "请导入剪贴板文本、TXT、Markdown、PDF、PNG 或 JPEG"
                   : !runtimeStatus.ocrReady && hasScannableText
                     ? "文本将使用本地规则扫描；安装语义模型后可增强识别"
                     : "扫描任务和敏感结果只保存在 Rust 进程内"}
@@ -825,7 +888,7 @@ function App() {
           onRemoveMask={(groupId) =>
             applyReviewMutation("remove_review_mask", { groupId })
           }
-          onExport={() => exportScan(reviewPage.id)}
+          onExport={() => deliverScan(reviewPage.id)}
         />
       )}
       {textReview && textReviewFile && (
@@ -836,7 +899,7 @@ function App() {
           exporting={reviewScan?.status === "exporting"}
           onClose={() => setTextReview(null)}
           onSetFinding={applyTextReviewMutation}
-          onExport={() => exportScan(textReview.id)}
+          onExport={() => deliverScan(textReview.id)}
         />
       )}
     </div>

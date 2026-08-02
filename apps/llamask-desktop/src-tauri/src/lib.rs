@@ -16,11 +16,13 @@ use llamask_core::{
     RuntimeRegistry, TaskDraft, WorkflowError, add_manual_image_mask,
     export_image_task_with_runtimes, export_pdf_task_with_runtimes, export_task_with_runtimes,
     remove_manual_image_group, render_image_task_preview, render_pdf_task_page_preview,
-    review_image_group, review_text_finding, scan_image_with_policy, scan_path_with_policy,
-    scan_pdf_with_policy_and_progress, update_image_mask,
+    render_task_with_runtimes, review_image_group, review_text_finding, scan_image_with_policy,
+    scan_path_with_policy, scan_pdf_with_policy_and_progress, scan_text_with_policy,
+    update_image_mask,
 };
 use serde::Serialize;
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_IMPORT_FILES: usize = 200;
@@ -46,10 +48,16 @@ struct DesktopState {
 
 #[derive(Debug, Clone)]
 struct RegisteredFile {
-    path: PathBuf,
+    source: RegisteredSource,
     kind: DesktopFileKind,
     ready: bool,
     scan_supported: bool,
+}
+
+#[derive(Debug, Clone)]
+enum RegisteredSource {
+    File(PathBuf),
+    Clipboard(String),
 }
 
 struct RuntimeContext {
@@ -70,6 +78,20 @@ enum DesktopFileKind {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DesktopSourceKind {
+    File,
+    Clipboard,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DesktopOutputKind {
+    File,
+    Clipboard,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ImportedFile {
@@ -77,6 +99,7 @@ struct ImportedFile {
     display_name: String,
     extension: String,
     kind: DesktopFileKind,
+    source_kind: DesktopSourceKind,
     size_bytes: u64,
     ready: bool,
     scan_supported: bool,
@@ -169,6 +192,7 @@ struct DesktopScanSummary {
     can_cancel: bool,
     error_code: Option<String>,
     output_name: Option<String>,
+    output_kind: Option<DesktopOutputKind>,
     verification_complete: bool,
 }
 
@@ -236,7 +260,7 @@ struct DesktopTextReviewMutation {
 
 struct ScanCandidate {
     id: String,
-    path: PathBuf,
+    source: RegisteredSource,
     kind: DesktopFileKind,
     cancel_requested: Arc<AtomicBool>,
 }
@@ -265,6 +289,7 @@ struct ScanRecord {
     task: Option<StoredScanTask>,
     error_code: Option<&'static str>,
     output_name: Option<String>,
+    output_kind: Option<DesktopOutputKind>,
     verification_complete: bool,
 }
 
@@ -333,6 +358,7 @@ impl ScanRecord {
             task: None,
             error_code: None,
             output_name: None,
+            output_kind: None,
             verification_complete: false,
         }
     }
@@ -361,6 +387,7 @@ impl ScanRecord {
             ),
             error_code: self.error_code.map(str::to_owned),
             output_name: self.output_name.clone(),
+            output_kind: self.output_kind,
             verification_complete: self.verification_complete,
         }
     }
@@ -378,6 +405,7 @@ impl ScanRecord {
         self.task = Some(task);
         self.error_code = None;
         self.output_name = None;
+        self.output_kind = None;
         self.verification_complete = false;
     }
 
@@ -394,6 +422,7 @@ impl ScanRecord {
         self.stage = DesktopScanStage::Complete;
         self.error_code = None;
         self.output_name = None;
+        self.output_kind = None;
         self.verification_complete = false;
     }
 
@@ -402,6 +431,7 @@ impl ScanRecord {
         self.stage = DesktopScanStage::Exporting;
         self.error_code = None;
         self.output_name = None;
+        self.output_kind = None;
         self.verification_complete = false;
     }
 
@@ -410,6 +440,16 @@ impl ScanRecord {
         self.stage = DesktopScanStage::Complete;
         self.error_code = None;
         self.output_name = Some(output_name);
+        self.output_kind = Some(DesktopOutputKind::File);
+        self.verification_complete = verification_complete;
+    }
+
+    fn finish_clipboard_export(&mut self, verification_complete: bool) {
+        self.status = DesktopScanStatus::Complete;
+        self.stage = DesktopScanStage::Complete;
+        self.error_code = None;
+        self.output_name = None;
+        self.output_kind = Some(DesktopOutputKind::Clipboard);
         self.verification_complete = verification_complete;
     }
 
@@ -418,6 +458,7 @@ impl ScanRecord {
         self.stage = DesktopScanStage::Failed;
         self.error_code = Some(code);
         self.output_name = None;
+        self.output_kind = None;
         self.verification_complete = false;
     }
 
@@ -427,6 +468,7 @@ impl ScanRecord {
         self.task = None;
         self.error_code = None;
         self.output_name = None;
+        self.output_kind = None;
         self.verification_complete = false;
     }
 
@@ -436,6 +478,7 @@ impl ScanRecord {
         self.task = None;
         self.error_code = Some(code);
         self.output_name = None;
+        self.output_kind = None;
         self.verification_complete = false;
     }
 }
@@ -450,7 +493,7 @@ fn desktop_capabilities() -> DesktopCapabilities {
         max_import_files: MAX_IMPORT_FILES,
         supported_extensions: SUPPORTED_EXTENSIONS.to_vec(),
         scan_extensions: vec!["txt", "md", "pdf", "png", "jpg", "jpeg"],
-        milestone: "text-image-pdf-review-export",
+        milestone: "clipboard-text-image-pdf-review-export",
     }
 }
 
@@ -482,6 +525,67 @@ async fn pick_files(
     register_files(state.inner(), paths)
 }
 
+#[tauri::command]
+fn import_clipboard_text(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<ImportedFile, DesktopCommandError> {
+    let text = app.clipboard().read_text().map_err(|_| {
+        DesktopCommandError::new("CLIPBOARD_READ_FAILED", "无法读取系统剪贴板中的纯文本。")
+    })?;
+    register_clipboard_text(state.inner(), text)
+}
+
+fn register_clipboard_text(
+    state: &DesktopState,
+    text: String,
+) -> Result<ImportedFile, DesktopCommandError> {
+    if text.trim().is_empty() {
+        return Err(DesktopCommandError::new(
+            "CLIPBOARD_EMPTY",
+            "剪贴板中没有可处理的纯文本。",
+        ));
+    }
+    let size_bytes = text.len() as u64;
+    if size_bytes > MAX_TEXT_BYTES {
+        return Err(DesktopCommandError::new(
+            "CLIPBOARD_TOO_LARGE",
+            "剪贴板文本超过 2 MiB 安全处理上限。",
+        ));
+    }
+
+    let mut registry = state.files.lock().map_err(|_| task_state_error())?;
+    if let Some((existing_id, _)) = registry.iter().find(|(_, registered)| {
+        matches!(&registered.source, RegisteredSource::Clipboard(existing) if existing == &text)
+    }) {
+        return Ok(clipboard_imported_file(
+            existing_id.clone(),
+            size_bytes,
+            true,
+        ));
+    }
+    if registry.len() >= MAX_IMPORT_FILES {
+        return Err(DesktopCommandError::new(
+            "TOO_MANY_FILES",
+            "当前任务最多包含 200 个文件或剪贴板文本。",
+        ));
+    }
+    let id = format!(
+        "clipboard-{:08}",
+        state.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    registry.insert(
+        id.clone(),
+        RegisteredFile {
+            source: RegisteredSource::Clipboard(text),
+            kind: DesktopFileKind::Text,
+            ready: true,
+            scan_supported: true,
+        },
+    );
+    Ok(clipboard_imported_file(id, size_bytes, false))
+}
+
 fn register_files(
     state: &DesktopState,
     paths: Vec<PathBuf>,
@@ -499,6 +603,12 @@ fn register_files(
     let mut registry = state.files.lock().map_err(|_| {
         DesktopCommandError::new("TASK_STATE_UNAVAILABLE", "本地任务状态暂时不可用。")
     })?;
+    if registry.len().saturating_add(paths.len()) > MAX_IMPORT_FILES {
+        return Err(DesktopCommandError::new(
+            "TOO_MANY_FILES",
+            "当前任务最多包含 200 个文件或剪贴板文本。",
+        ));
+    }
     let mut imported = Vec::with_capacity(paths.len());
     for original in paths {
         let id = format!(
@@ -522,7 +632,9 @@ fn register_files(
         };
         if let Some((existing_id, _)) = registry
             .iter()
-            .find(|(_, registered)| registered.path == canonical)
+            .find(|(_, registered)| {
+                matches!(&registered.source, RegisteredSource::File(path) if path == &canonical)
+            })
         {
             let mut candidate = inspect_file(
                 existing_id.clone(),
@@ -539,7 +651,7 @@ fn register_files(
         registry.insert(
             id,
             RegisteredFile {
-                path: canonical,
+                source: RegisteredSource::File(canonical),
                 kind: candidate.kind,
                 ready: candidate.ready,
                 scan_supported: candidate.scan_supported,
@@ -634,7 +746,7 @@ fn start_registered_scans(
     let candidate_files = files
         .iter()
         .filter(|(_, file)| file.ready && file.scan_supported)
-        .map(|(id, file)| (id.clone(), file.path.clone(), file.kind))
+        .map(|(id, file)| (id.clone(), file.source.clone(), file.kind))
         .collect::<Vec<_>>();
     drop(files);
 
@@ -643,7 +755,7 @@ fn start_registered_scans(
         DesktopCommandError::new("TASK_STATE_UNAVAILABLE", "本地任务状态暂时不可用。")
     })?;
     let mut candidates = Vec::new();
-    for (id, path, kind) in candidate_files {
+    for (id, source, kind) in candidate_files {
         if scans.get(&id).is_some_and(|record| {
             !matches!(
                 record.status,
@@ -656,7 +768,7 @@ fn start_registered_scans(
         scans.insert(id.clone(), ScanRecord::queued(cancel_requested.clone()));
         candidates.push(ScanCandidate {
             id,
-            path,
+            source,
             kind,
             cancel_requested,
         });
@@ -917,7 +1029,13 @@ fn choose_and_export_scan(
     let (default_name, extension, file_kind) = {
         let files = state.files.lock().map_err(|_| task_state_error())?;
         let file = files.get(&id).ok_or_else(scan_not_found_error)?;
-        let (name, extension) = export_name_and_extension(&file.path)?;
+        let RegisteredSource::File(path) = &file.source else {
+            return Err(DesktopCommandError::new(
+                "CLIPBOARD_USE_COPY_ACTION",
+                "剪贴板任务请使用“复制脱敏结果”。",
+            ));
+        };
+        let (name, extension) = export_name_and_extension(path)?;
         (name, extension, file.kind)
     };
     let extensions = [extension.as_str()];
@@ -1020,6 +1138,102 @@ fn choose_and_export_scan(
                 update_scan(&worker_app, &export_id, |record| record.fail_export(code))
             }
             Err(_) => update_scan(&worker_app, &export_id, |record| {
+                record.fail_export("EXPORT_WORKER_FAILED")
+            }),
+        }
+        worker_app
+            .state::<DesktopState>()
+            .worker_running
+            .store(false, Ordering::Release);
+    });
+    Ok(true)
+}
+
+#[tauri::command]
+fn copy_redacted_clipboard(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+    id: String,
+) -> Result<bool, DesktopCommandError> {
+    if state.worker_running.swap(true, Ordering::AcqRel) {
+        return Err(DesktopCommandError::new(
+            "LOCAL_WORK_ACTIVE",
+            "当前扫描或安全导出任务尚未结束。",
+        ));
+    }
+    let is_clipboard = state
+        .files
+        .lock()
+        .map_err(|_| {
+            state.worker_running.store(false, Ordering::Release);
+            task_state_error()
+        })?
+        .get(&id)
+        .is_some_and(|file| matches!(&file.source, RegisteredSource::Clipboard(_)));
+    if !is_clipboard {
+        state.worker_running.store(false, Ordering::Release);
+        return Err(DesktopCommandError::new(
+            "CLIPBOARD_TASK_REQUIRED",
+            "当前任务不是剪贴板文本。",
+        ));
+    }
+    let context = runtime_context(&app, state.inner()).ok();
+    let task = {
+        let mut scans = state.scans.lock().map_err(|_| {
+            state.worker_running.store(false, Ordering::Release);
+            task_state_error()
+        })?;
+        let record = scans.get_mut(&id).ok_or_else(|| {
+            state.worker_running.store(false, Ordering::Release);
+            scan_not_found_error()
+        })?;
+        if !matches!(
+            record.status,
+            DesktopScanStatus::ReadyToExport
+                | DesktopScanStatus::ExportFailed
+                | DesktopScanStatus::Complete
+        ) {
+            state.worker_running.store(false, Ordering::Release);
+            return Err(DesktopCommandError::new(
+                "EXPORT_NOT_READY",
+                "请先完成所有待复核结果。",
+            ));
+        }
+        let Some(StoredScanTask::Text(task)) = record.task.clone() else {
+            state.worker_running.store(false, Ordering::Release);
+            return Err(scan_not_found_error());
+        };
+        record.begin_export();
+        task
+    };
+    emit_scan_summary(&app, &id);
+
+    let copy_app = app.clone();
+    let copy_id = id.clone();
+    tauri::async_runtime::spawn(async move {
+        let worker_app = copy_app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            render_task_with_runtimes(&task, context.as_deref().map(|context| &context.registry))
+                .map(|(text, report)| (text, report.complete))
+                .map_err(|error| text_export_error_code(&error))
+        })
+        .await;
+        match result {
+            Ok(Ok((text, verification_complete))) => {
+                if worker_app.clipboard().write_text(text).is_ok() {
+                    update_scan(&worker_app, &copy_id, |record| {
+                        record.finish_clipboard_export(verification_complete)
+                    });
+                } else {
+                    update_scan(&worker_app, &copy_id, |record| {
+                        record.fail_export("CLIPBOARD_WRITE_FAILED")
+                    });
+                }
+            }
+            Ok(Err(code)) => {
+                update_scan(&worker_app, &copy_id, |record| record.fail_export(code));
+            }
+            Err(_) => update_scan(&worker_app, &copy_id, |record| {
                 record.fail_export("EXPORT_WORKER_FAILED")
             }),
         }
@@ -1287,6 +1501,7 @@ fn run_scan_batch(app: AppHandle, candidates: Vec<ScanCandidate>) {
             record.task = None;
             record.error_code = None;
             record.output_name = None;
+            record.output_kind = None;
             record.verification_complete = false;
         });
 
@@ -1323,11 +1538,11 @@ fn scan_text_candidate(
         record.stage = DesktopScanStage::DetectingText;
         record.total_units = 1;
     });
-    let result = scan_path_with_policy(
-        &candidate.path,
-        policy,
-        context.map(|context| &context.registry),
-    );
+    let runtimes = context.map(|context| &context.registry);
+    let result = match &candidate.source {
+        RegisteredSource::File(path) => scan_path_with_policy(path, policy, runtimes),
+        RegisteredSource::Clipboard(text) => scan_text_with_policy(text.clone(), policy, runtimes),
+    };
     if candidate.cancel_requested.load(Ordering::Acquire) {
         update_scan(app, &candidate.id, ScanRecord::cancel);
         return;
@@ -1348,16 +1563,17 @@ fn scan_image_candidate(
     context: &RuntimeContext,
     policy: &PolicyConfig,
 ) {
+    let Some(path) = registered_source_path(&candidate.source) else {
+        update_scan(app, &candidate.id, |record| {
+            record.block("SCAN_SOURCE_INVALID")
+        });
+        return;
+    };
     update_scan(app, &candidate.id, |record| {
         record.stage = DesktopScanStage::Ocr;
         record.total_units = 1;
     });
-    let result = scan_image_with_policy(
-        &candidate.path,
-        policy,
-        &context.registry,
-        &context.ocr_runtime_id,
-    );
+    let result = scan_image_with_policy(path, policy, &context.registry, &context.ocr_runtime_id);
     if candidate.cancel_requested.load(Ordering::Acquire) {
         update_scan(app, &candidate.id, ScanRecord::cancel);
         return;
@@ -1378,11 +1594,17 @@ fn scan_pdf_candidate(
     context: &RuntimeContext,
     policy: &PolicyConfig,
 ) {
+    let Some(path) = registered_source_path(&candidate.source) else {
+        update_scan(app, &candidate.id, |record| {
+            record.block("SCAN_SOURCE_INVALID")
+        });
+        return;
+    };
     let progress_app = app.clone();
     let progress_id = candidate.id.clone();
     let cancel_requested = candidate.cancel_requested.clone();
     let result = scan_pdf_with_policy_and_progress(
-        &candidate.path,
+        path,
         policy,
         &context.registry,
         &context.ocr_runtime_id,
@@ -1738,6 +1960,7 @@ fn inspect_file(id: String, display_name: String, path: &Path, size_bytes: u64) 
         display_name,
         extension,
         kind,
+        source_kind: DesktopSourceKind::File,
         size_bytes,
         ready,
         scan_supported,
@@ -1752,11 +1975,39 @@ fn unreadable_file(id: String, display_name: String, path: &Path) -> ImportedFil
         display_name,
         extension: normalized_extension(path),
         kind: DesktopFileKind::Unknown,
+        source_kind: DesktopSourceKind::File,
         size_bytes: 0,
         ready: false,
         scan_supported: false,
         reason_code: "FILE_UNREADABLE".to_owned(),
         duplicate: false,
+    }
+}
+
+fn clipboard_imported_file(id: String, size_bytes: u64, duplicate: bool) -> ImportedFile {
+    ImportedFile {
+        id,
+        display_name: "剪贴板文本".to_owned(),
+        extension: "txt".to_owned(),
+        kind: DesktopFileKind::Text,
+        source_kind: DesktopSourceKind::Clipboard,
+        size_bytes,
+        ready: true,
+        scan_supported: true,
+        reason_code: if duplicate {
+            "ALREADY_IMPORTED"
+        } else {
+            "READY"
+        }
+        .to_owned(),
+        duplicate,
+    }
+}
+
+fn registered_source_path(source: &RegisteredSource) -> Option<&Path> {
+    match source {
+        RegisteredSource::File(path) => Some(path),
+        RegisteredSource::Clipboard(_) => None,
     }
 }
 
@@ -1791,6 +2042,7 @@ fn extension_profile(extension: &str) -> (DesktopFileKind, u64) {
 pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState::default())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
@@ -1810,6 +2062,7 @@ pub fn run() {
             desktop_capabilities,
             desktop_runtime_status,
             pick_files,
+            import_clipboard_text,
             remove_registered_file,
             clear_registered_files,
             scan_task_summaries,
@@ -1822,7 +2075,8 @@ pub fn run() {
             remove_review_mask,
             review_text_scan,
             set_text_review_finding,
-            choose_and_export_scan
+            choose_and_export_scan,
+            copy_redacted_clipboard
         ])
         .run(tauri::generate_context!())
         .expect("LlaMask desktop runtime failed");
@@ -1841,9 +2095,9 @@ mod tests {
     use llamask_core::{PolicyConfig, scan_text_with_policy};
 
     use super::{
-        DesktopFileKind, DesktopScanStage, DesktopScanStatus, DesktopState, ScanRecord,
-        export_name_and_extension, inspect_file, register_files, review_findings,
-        text_review_findings,
+        DesktopFileKind, DesktopOutputKind, DesktopScanStage, DesktopScanStatus, DesktopSourceKind,
+        DesktopState, MAX_TEXT_BYTES, ScanRecord, export_name_and_extension, inspect_file,
+        register_clipboard_text, register_files, review_findings, text_review_findings,
     };
 
     #[test]
@@ -1901,6 +2155,61 @@ mod tests {
         assert_eq!(duplicate[0].id, first[0].id);
         assert!(duplicate[0].duplicate);
         assert_eq!(duplicate[0].reason_code, "ALREADY_IMPORTED");
+    }
+
+    #[test]
+    fn clipboard_registration_is_memory_only_and_deduplicated() {
+        let state = DesktopState::default();
+        let sensitive_text = "联系人张三，邮箱 case@example.com".to_owned();
+
+        let first = register_clipboard_text(&state, sensitive_text.clone()).unwrap();
+        let duplicate = register_clipboard_text(&state, sensitive_text.clone()).unwrap();
+        let json = serde_json::to_string(&first).unwrap();
+
+        assert_eq!(first.id, "clipboard-00000001");
+        assert_eq!(first.source_kind, DesktopSourceKind::Clipboard);
+        assert!(!first.duplicate);
+        assert_eq!(duplicate.id, first.id);
+        assert!(duplicate.duplicate);
+        assert!(!json.contains(&sensitive_text));
+        assert!(!json.contains("case@example.com"));
+        assert!(!json.contains("sourcePath"));
+    }
+
+    #[test]
+    fn clipboard_registration_rejects_empty_and_oversized_text() {
+        let state = DesktopState::default();
+
+        let empty = register_clipboard_text(&state, " \n\t".to_owned()).unwrap_err();
+        let oversized =
+            register_clipboard_text(&state, "x".repeat(MAX_TEXT_BYTES as usize + 1)).unwrap_err();
+
+        assert_eq!(empty.code, "CLIPBOARD_EMPTY");
+        assert_eq!(oversized.code, "CLIPBOARD_TOO_LARGE");
+        assert!(state.files.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn webview_capability_does_not_grant_direct_clipboard_access() {
+        let capability = include_str!("../capabilities/main-capability.json");
+        let value: serde_json::Value = serde_json::from_str(capability).unwrap();
+
+        assert_eq!(value["permissions"], serde_json::json!(["core:default"]));
+        assert!(!capability.contains("clipboard-manager:allow"));
+    }
+
+    #[test]
+    fn clipboard_export_summary_exposes_only_its_destination_kind() {
+        let mut record = ScanRecord::queued(Arc::new(AtomicBool::new(false)));
+        record.finish_clipboard_export(true);
+        let summary = record.summary("clipboard-00000042");
+        let json = serde_json::to_string(&summary).unwrap();
+
+        assert_eq!(summary.status, DesktopScanStatus::Complete);
+        assert_eq!(summary.output_kind, Some(DesktopOutputKind::Clipboard));
+        assert!(summary.output_name.is_none());
+        assert!(summary.verification_complete);
+        assert!(!json.contains("matchedText"));
     }
 
     #[test]
