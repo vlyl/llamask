@@ -30,6 +30,7 @@ interface ReviewWorkspaceProps {
   page: DesktopReviewPage;
   busy: boolean;
   exporting: boolean;
+  canExport: boolean;
   onClose: () => void;
   onPageChange: (pageNumber: number) => Promise<void>;
   onSetGroup: (groupId: string, selected: boolean) => Promise<void>;
@@ -112,6 +113,7 @@ export function ReviewWorkspace({
   page,
   busy,
   exporting,
+  canExport,
   onClose,
   onPageChange,
   onSetGroup,
@@ -150,6 +152,7 @@ export function ReviewWorkspace({
   const groups = useMemo(() => groupState(findings), [findings]);
   const activeFinding = findings.find((finding) => finding.findingId === activeFindingId);
   const pendingGroups = groups.filter((group) => !group.reviewed).length;
+  const embeddedImage = file.kind === "word";
 
   const sourcePoint = (clientX: number, clientY: number) => {
     const bounds = overlayRef.current?.getBoundingClientRect();
@@ -297,7 +300,9 @@ export function ReviewWorkspace({
             <p className="eyebrow">本地复核 · 不写入浏览器存储</p>
             <h2>{file.displayName}</h2>
             <span>
-              第 {page.pageNumber} / {page.pageCount} 页 · {groups.length} 个结果 · {pendingGroups} 个待确认
+              {embeddedImage
+                ? `内嵌图片 ${page.pageNumber} / ${page.pageCount}`
+                : `第 ${page.pageNumber} / ${page.pageCount} 页`} · {groups.length} 个结果 · {pendingGroups} 个待确认
             </span>
           </div>
           <div className="review-header-actions">
@@ -318,7 +323,11 @@ export function ReviewWorkspace({
         <div className="review-body">
           <div className="preview-column">
             <div className={`page-preview ${addMode ? "drawing" : ""}`}>
-              <img src={page.imageDataUrl} alt="本地复核页面" draggable={false} />
+              <img
+                src={page.imageDataUrl}
+                alt={embeddedImage ? "DOCX 内嵌图片复核" : "本地复核页面"}
+                draggable={false}
+              />
               <div
                 className="mask-overlay"
                 ref={overlayRef}
@@ -375,7 +384,7 @@ export function ReviewWorkspace({
                 disabled={busy || page.pageNumber <= 1}
                 onClick={() => void onPageChange(page.pageNumber - 1)}
               >
-                上一页
+                {embeddedImage ? "上一张" : "上一页"}
               </button>
               <span>拖动遮罩可移动，右下角手柄可缩放</span>
               <button
@@ -384,7 +393,7 @@ export function ReviewWorkspace({
                 disabled={busy || page.pageNumber >= page.pageCount}
                 onClick={() => void onPageChange(page.pageNumber + 1)}
               >
-                下一页
+                {embeddedImage ? "下一张" : "下一页"}
               </button>
             </div>
           </div>
@@ -485,11 +494,17 @@ export function ReviewWorkspace({
         </div>
 
         <footer className="review-footer">
-          <span>{pendingGroups > 0 ? `还有 ${pendingGroups} 个结果需要确认` : "所有结果已复核，可以执行安全导出"}</span>
+          <span>
+            {pendingGroups > 0
+              ? `当前${embeddedImage ? "图片" : "页面"}还有 ${pendingGroups} 个结果需要确认`
+              : !canExport
+                ? "文档其他内容仍有待确认"
+                : "所有结果已复核，可以执行安全导出"}
+          </span>
           <button
             className="primary-button"
             type="button"
-            disabled={busy || exporting || pendingGroups > 0}
+            disabled={busy || exporting || !canExport}
             onClick={() => void onExport()}
           >
             {exporting ? "正在导出并复检…" : "保存安全副本"}

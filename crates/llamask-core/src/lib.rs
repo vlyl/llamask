@@ -11,8 +11,9 @@ pub mod workflow;
 pub mod xlsx_workflow;
 
 pub use docx_workflow::{
-    DocxWorkflowError, export_docx_task_with_runtimes, scan_docx_with_policy,
-    scan_docx_with_policy_and_images, verify_docx_file_with_runtimes,
+    DocxWorkflowError, export_docx_task_with_runtimes, render_docx_embedded_image_preview,
+    review_docx_finding, scan_docx_with_policy, scan_docx_with_policy_and_images,
+    verify_docx_file_with_runtimes,
 };
 pub use image_workflow::{
     ImageWorkflowError, add_manual_image_mask, export_image_task_with_runtimes,

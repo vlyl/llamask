@@ -48,7 +48,7 @@ const browserCapabilities: DesktopCapabilities = {
     "jpg",
     "jpeg",
   ],
-  scanExtensions: ["txt", "md", "pdf", "png", "jpg", "jpeg"],
+  scanExtensions: ["txt", "md", "docx", "pdf", "png", "jpg", "jpeg"],
   milestone: "browser-preview",
 };
 
@@ -117,6 +117,17 @@ const scanErrorLabels: Record<string, string> = {
   UNSUPPORTED_TEXT_TYPE: "文本格式不受支持",
   TEXT_READ_FAILED: "文本文件无法安全读取",
   TEXT_SCAN_FAILED: "文本扫描未完成",
+  DOCX_LIMIT_EXCEEDED: "DOCX 超过安全处理限制",
+  ENCRYPTED_DOCX_UNSUPPORTED: "加密 DOCX 需要先生成可信解密副本",
+  INVALID_DOCX: "DOCX 结构无效或缺少必要内容",
+  DOCX_READ_FAILED: "DOCX 无法安全读取",
+  DOCX_SCAN_FAILED: "DOCX 扫描未完成",
+  DOCX_EMBEDDED_IMAGE_UNSUPPORTED: "DOCX 包含暂不支持的内嵌图片格式",
+  DOCX_EMBEDDED_OBJECTS_UNSUPPORTED: "DOCX 包含无法安全验证的嵌入对象",
+  DOCX_ACTIVE_CONTENT_UNSUPPORTED: "DOCX 包含宏、ActiveX 或其他主动内容",
+  DOCX_EXTERNAL_RELATIONSHIP_UNSUPPORTED: "DOCX 包含无法安全保留的外部关系",
+  DOCX_EXPORT_FAILED: "DOCX 安全导出未完成",
+  DOCX_IMAGE_PREVIEW_FAILED: "DOCX 内嵌图片预览生成失败",
   MODEL_RUNTIME_REQUIRED: "策略要求的本地语义模型不可用",
   OUTPUT_EXISTS: "目标文件已经存在，请选择其他名称",
   OUTPUT_CONFLICT: "输出路径不能覆盖源文件",
@@ -418,7 +429,11 @@ function App() {
     }
   };
 
-  const openReview = async (id: string, pageNumber = 1) => {
+  const openPageReview = async (
+    id: string,
+    pageNumber = 1,
+    preserveTextReview = false,
+  ) => {
     if (!tauriRuntime) {
       setNotice("浏览器预览不会读取本地复核页；请在 Tauri 窗口中运行。");
       return;
@@ -426,19 +441,35 @@ function App() {
     setReviewBusy(true);
     setNotice(null);
     try {
-      const file = files.find((candidate) => candidate.id === id);
-      if (file?.kind === "text") {
-        const review = await invoke<DesktopTextReview>("review_text_scan", { id });
-        setTextReview(review);
-        setReviewPage(null);
-        return;
-      }
       const page = await invoke<DesktopReviewPage>("review_scan_page", {
         id,
         pageNumber,
       });
       setReviewPage(page);
-      setTextReview(null);
+      if (!preserveTextReview) setTextReview(null);
+    } catch (error) {
+      setNotice(normalizeError(error).message);
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const openReview = async (id: string, pageNumber = 1) => {
+    const file = files.find((candidate) => candidate.id === id);
+    if (file?.kind !== "text" && file?.kind !== "word") {
+      await openPageReview(id, pageNumber);
+      return;
+    }
+    if (!tauriRuntime) {
+      setNotice("浏览器预览不会读取本地复核结果；请在 Tauri 窗口中运行。");
+      return;
+    }
+    setReviewBusy(true);
+    setNotice(null);
+    try {
+      const review = await invoke<DesktopTextReview>("review_text_scan", { id });
+      setTextReview(review);
+      setReviewPage(null);
     } catch (error) {
       setNotice(normalizeError(error).message);
     } finally {
@@ -469,6 +500,17 @@ function App() {
         next.set(mutation.summary.id, mutation.summary);
         return next;
       });
+      setTextReview((current) => {
+        if (!current || current.id !== mutation.summary.id) return current;
+        const pendingText = current.findings.filter((finding) => !finding.reviewed).length;
+        return {
+          ...current,
+          unreviewedImageGroups: Math.max(
+            0,
+            mutation.summary.unreviewedGroups - pendingText,
+          ),
+        };
+      });
     } catch (error) {
       setNotice(normalizeError(error).message);
     } finally {
@@ -498,6 +540,17 @@ function App() {
         const next = new Map(current);
         next.set(mutation.summary.id, mutation.summary);
         return next;
+      });
+      setTextReview((current) => {
+        if (!current || current.id !== mutation.summary.id) return current;
+        const pendingText = current.findings.filter((finding) => !finding.reviewed).length;
+        return {
+          ...current,
+          unreviewedImageGroups: Math.max(
+            0,
+            mutation.summary.unreviewedGroups - pendingText,
+          ),
+        };
       });
     } catch (error) {
       setNotice(normalizeError(error).message);
@@ -561,17 +614,17 @@ function App() {
     : null;
   const reviewScanId = reviewPage?.id ?? textReview?.id;
   const reviewScan = reviewScanId ? scans.get(reviewScanId) : undefined;
-  const hasScannableText = files.some((file) => {
+  const hasRuleScannableContent = files.some((file) => {
     const scan = scans.get(file.id);
     return (
-      file.kind === "text" &&
+      (file.kind === "text" || file.kind === "word") &&
       file.ready &&
       file.scanSupported &&
       (!scan || ["blocked", "cancelled"].includes(scan.status))
     );
   });
   const scanRuntimeReady =
-    runtimeStatus.scanReady || (runtimeStatus.policyReady && hasScannableText);
+    runtimeStatus.scanReady || (runtimeStatus.policyReady && hasRuleScannableContent);
 
   return (
     <div className="app-shell">
@@ -622,7 +675,7 @@ function App() {
                     ? `${summary.active} 个项目正在本机处理`
                     : summary.completed > 0
                       ? `${summary.completed} 个项目扫描完成`
-                      : "文本、PDF 与图片已接入"}
+                      : "文本、DOCX、PDF 与图片已接入"}
                 </small>
               </div>
             </li>
@@ -845,9 +898,9 @@ function App() {
               {!scanRuntimeReady
                 ? "请完成默认策略或本地 OCR 资源完整性检查"
                 : summary.scannable === 0
-                  ? "请导入剪贴板文本、TXT、Markdown、PDF、PNG 或 JPEG"
-                  : !runtimeStatus.ocrReady && hasScannableText
-                    ? "文本将使用本地规则扫描；安装语义模型后可增强识别"
+                  ? "请导入剪贴板文本、TXT、Markdown、DOCX、PDF、PNG 或 JPEG"
+                  : !runtimeStatus.ocrReady && hasRuleScannableContent
+                    ? "文本和 DOCX 文字将使用本地规则扫描；含图片的 DOCX 需要本地 OCR"
                     : "扫描任务和敏感结果只保存在 Rust 进程内"}
             </span>
             <button
@@ -874,8 +927,11 @@ function App() {
           page={reviewPage}
           busy={reviewBusy}
           exporting={reviewScan?.status === "exporting"}
+          canExport={reviewScan?.unreviewedGroups === 0}
           onClose={() => setReviewPage(null)}
-          onPageChange={(pageNumber) => openReview(reviewPage.id, pageNumber)}
+          onPageChange={(pageNumber) =>
+            openPageReview(reviewPage.id, pageNumber, reviewFile.kind === "word")
+          }
           onSetGroup={(groupId, selected) =>
             applyReviewMutation("set_review_group", { groupId, selected })
           }
@@ -891,7 +947,7 @@ function App() {
           onExport={() => deliverScan(reviewPage.id)}
         />
       )}
-      {textReview && textReviewFile && (
+      {!reviewPage && textReview && textReviewFile && (
         <TextReviewWorkspace
           file={textReviewFile}
           review={textReview}
@@ -899,6 +955,11 @@ function App() {
           exporting={reviewScan?.status === "exporting"}
           onClose={() => setTextReview(null)}
           onSetFinding={applyTextReviewMutation}
+          onOpenEmbeddedImages={
+            textReviewFile.kind === "word" && textReview.embeddedImageCount > 0
+              ? () => openPageReview(textReview.id, 1, true)
+              : undefined
+          }
           onExport={() => deliverScan(textReview.id)}
         />
       )}

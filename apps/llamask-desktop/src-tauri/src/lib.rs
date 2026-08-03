@@ -9,16 +9,17 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use llamask_core::model::{EntityType, ImageFinding};
+use llamask_core::model::{DocumentPart, EntityType, Finding, ImageFinding};
 use llamask_core::sidecar::DetectorKind;
 use llamask_core::{
-    ImageRect, ImageTaskDraft, ImageWorkflowError, PdfTaskDraft, PdfWorkflowError, PolicyConfig,
-    RuntimeRegistry, TaskDraft, WorkflowError, add_manual_image_mask,
-    export_image_task_with_runtimes, export_pdf_task_with_runtimes, export_task_with_runtimes,
-    remove_manual_image_group, render_image_task_preview, render_pdf_task_page_preview,
-    render_task_with_runtimes, review_image_group, review_text_finding, scan_image_with_policy,
-    scan_path_with_policy, scan_pdf_with_policy_and_progress, scan_text_with_policy,
-    update_image_mask,
+    DocxTaskDraft, DocxWorkflowError, ImageRect, ImageTaskDraft, ImageWorkflowError, PdfTaskDraft,
+    PdfWorkflowError, PolicyConfig, RuntimeRegistry, TaskDraft, WorkflowError,
+    add_manual_image_mask, export_docx_task_with_runtimes, export_image_task_with_runtimes,
+    export_pdf_task_with_runtimes, export_task_with_runtimes, remove_manual_image_group,
+    render_docx_embedded_image_preview, render_image_task_preview, render_pdf_task_page_preview,
+    render_task_with_runtimes, review_docx_finding, review_image_group, review_text_finding,
+    scan_docx_with_policy_and_images, scan_image_with_policy, scan_path_with_policy,
+    scan_pdf_with_policy_and_progress, scan_text_with_policy, update_image_mask,
 };
 use serde::Serialize;
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
@@ -235,6 +236,7 @@ struct DesktopTextReviewFinding {
     finding_id: String,
     entity_type: String,
     confidence: f32,
+    section_label: Option<String>,
     context_before: String,
     matched_text: String,
     context_after: String,
@@ -248,6 +250,8 @@ struct DesktopTextReviewFinding {
 struct DesktopTextReview {
     id: String,
     total_characters: usize,
+    embedded_image_count: usize,
+    unreviewed_image_groups: usize,
     findings: Vec<DesktopTextReviewFinding>,
 }
 
@@ -270,6 +274,7 @@ enum StoredScanTask {
     Text(Box<TaskDraft>),
     Image(Box<ImageTaskDraft>),
     Pdf(Box<PdfTaskDraft>),
+    Docx(Box<DocxTaskDraft>),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -309,6 +314,7 @@ impl StoredScanTask {
             Self::Text(task) => text_task_metrics(task),
             Self::Image(task) => image_task_metrics(task),
             Self::Pdf(task) => pdf_task_metrics(task),
+            Self::Docx(task) => docx_task_metrics(task),
         }
     }
 
@@ -317,6 +323,7 @@ impl StoredScanTask {
             Self::Text(_) => 1,
             Self::Image(_) => 1,
             Self::Pdf(task) => task.pages.len(),
+            Self::Docx(task) => task.embedded_images.len(),
         }
     }
 
@@ -329,6 +336,10 @@ impl StoredScanTask {
                 .iter()
                 .find(|page| page.page_number == page_number)
                 .map(|page| &page.task),
+            Self::Docx(task) => page_number
+                .checked_sub(1)
+                .and_then(|index| task.embedded_images.get(index))
+                .map(|embedded| &embedded.task),
             _ => None,
         }
     }
@@ -342,6 +353,10 @@ impl StoredScanTask {
                 .iter_mut()
                 .find(|page| page.page_number == page_number)
                 .map(|page| &mut page.task),
+            Self::Docx(task) => page_number
+                .checked_sub(1)
+                .and_then(|index| task.embedded_images.get_mut(index))
+                .map(|embedded| &mut embedded.task),
             _ => None,
         }
     }
@@ -492,8 +507,8 @@ fn desktop_capabilities() -> DesktopCapabilities {
         offline_only: true,
         max_import_files: MAX_IMPORT_FILES,
         supported_extensions: SUPPORTED_EXTENSIONS.to_vec(),
-        scan_extensions: vec!["txt", "md", "pdf", "png", "jpg", "jpeg"],
-        milestone: "clipboard-text-image-pdf-review-export",
+        scan_extensions: vec!["txt", "md", "docx", "pdf", "png", "jpg", "jpeg"],
+        milestone: "docx-clipboard-text-image-pdf-review-export",
     }
 }
 
@@ -787,7 +802,7 @@ fn start_registered_scans(
         state.worker_running.store(false, Ordering::Release);
         return Err(DesktopCommandError::new(
             "NO_SCANNABLE_FILES",
-            "请先导入 TXT、Markdown、PDF、PNG 或 JPEG 文件。",
+            "请先导入剪贴板文本、TXT、Markdown、DOCX、PDF、PNG 或 JPEG。",
         ));
     }
 
@@ -875,6 +890,8 @@ async fn review_scan_page(
         StoredScanTask::Pdf(task) => {
             render_pdf_task_page_preview(task, page_number).map_err(|_| "PDF_PREVIEW_FAILED")
         }
+        StoredScanTask::Docx(task) => render_docx_embedded_image_preview(task, page_number)
+            .map_err(|_| "DOCX_IMAGE_PREVIEW_FAILED"),
         _ => Err("REVIEW_PAGE_INVALID"),
     })
     .await
@@ -956,12 +973,25 @@ fn review_text_scan(
     state: State<'_, DesktopState>,
     id: String,
 ) -> Result<DesktopTextReview, DesktopCommandError> {
-    let task = {
+    let review = {
         let scans = state.scans.lock().map_err(|_| task_state_error())?;
         let record = scans.get(&id).ok_or_else(scan_not_found_error)?;
         ensure_review_ready(record)?;
         match record.task.as_ref() {
-            Some(StoredScanTask::Text(task)) => (**task).clone(),
+            Some(StoredScanTask::Text(task)) => DesktopTextReview {
+                id,
+                total_characters: task.document.parts.iter().map(|part| part.char_len).sum(),
+                embedded_image_count: 0,
+                unreviewed_image_groups: 0,
+                findings: text_review_findings(task)?,
+            },
+            Some(StoredScanTask::Docx(task)) => DesktopTextReview {
+                id,
+                total_characters: task.document.parts.iter().map(|part| part.char_len).sum(),
+                embedded_image_count: task.embedded_images.len(),
+                unreviewed_image_groups: docx_unreviewed_image_groups(task),
+                findings: docx_text_review_findings(task)?,
+            },
             _ => {
                 return Err(DesktopCommandError::new(
                     "TEXT_REVIEW_UNAVAILABLE",
@@ -970,12 +1000,7 @@ fn review_text_scan(
             }
         }
     };
-    let total_characters = task.document.parts.iter().map(|part| part.char_len).sum();
-    Ok(DesktopTextReview {
-        id,
-        total_characters,
-        findings: text_review_findings(&task)?,
-    })
+    Ok(review)
 }
 
 #[tauri::command]
@@ -996,6 +1021,11 @@ fn set_text_review_finding(
                 review_text_finding(task, &finding_id, selected, replacement.as_deref())
                     .map_err(text_review_error)?;
                 text_review_findings(task)?
+            }
+            Some(StoredScanTask::Docx(task)) => {
+                review_docx_finding(task, &finding_id, selected, replacement.as_deref())
+                    .map_err(docx_review_error)?;
+                docx_text_review_findings(task)?
             }
             _ => {
                 return Err(DesktopCommandError::new(
@@ -1060,7 +1090,7 @@ fn choose_and_export_scan(
     }
     let context = match runtime_context(&app, state.inner()) {
         Ok(context) => Some(context),
-        Err(_) if file_kind == DesktopFileKind::Text => None,
+        Err(_) if matches!(file_kind, DesktopFileKind::Text | DesktopFileKind::Word) => None,
         Err(failure) => {
             state.worker_running.store(false, Ordering::Release);
             return Err(DesktopCommandError::new(
@@ -1128,6 +1158,13 @@ fn choose_and_export_scan(
                     .map(|report| report.complete)
                     .map_err(|error| pdf_export_error_code(&error))
             }
+            StoredScanTask::Docx(task) => export_docx_task_with_runtimes(
+                task,
+                &output,
+                context.as_deref().map(|context| &context.registry),
+            )
+            .map(|report| report.complete)
+            .map_err(|error| docx_export_error_code(&error)),
         })
         .await;
         match result {
@@ -1337,14 +1374,27 @@ fn review_findings(findings: &[ImageFinding]) -> Vec<DesktopReviewFinding> {
 fn text_review_findings(
     task: &TaskDraft,
 ) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
-    task.findings
+    document_text_review_findings(&task.document.parts, &task.findings, false)
+}
+
+fn docx_text_review_findings(
+    task: &DocxTaskDraft,
+) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
+    document_text_review_findings(&task.document.parts, &task.findings, true)
+}
+
+fn document_text_review_findings(
+    parts: &[DocumentPart],
+    findings: &[Finding],
+    include_section_label: bool,
+) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
+    findings
         .iter()
         .map(|finding| {
-            let part = task
-                .document
-                .parts
+            let (part_index, part) = parts
                 .iter()
-                .find(|part| part.id == finding.part_id)
+                .enumerate()
+                .find(|(_, part)| part.id == finding.part_id)
                 .ok_or_else(text_review_data_error)?;
             let characters = part.text.chars().collect::<Vec<_>>();
             if finding.start > finding.end || finding.end > characters.len() {
@@ -1356,12 +1406,18 @@ fn text_review_findings(
             if matched_text != finding.matched_text {
                 return Err(text_review_data_error());
             }
+            let part_number = parts[..=part_index]
+                .iter()
+                .filter(|candidate| candidate.kind == part.kind)
+                .count();
             let before_start = finding.start.saturating_sub(TEXT_REVIEW_CONTEXT_CHARS);
             let after_end = (finding.end + TEXT_REVIEW_CONTEXT_CHARS).min(characters.len());
             Ok(DesktopTextReviewFinding {
                 finding_id: finding.id.clone(),
                 entity_type: entity_type_code(finding.entity_type).to_owned(),
                 confidence: finding.confidence,
+                section_label: include_section_label
+                    .then(|| docx_section_label(&part.kind, part_number)),
                 context_before: characters[before_start..finding.start].iter().collect(),
                 matched_text,
                 context_after: characters[finding.end..after_end].iter().collect(),
@@ -1371,6 +1427,22 @@ fn text_review_findings(
             })
         })
         .collect()
+}
+
+fn docx_section_label(kind: &str, part_number: usize) -> String {
+    let label = match kind {
+        "body" => "正文",
+        "header" => "页眉",
+        "footer" => "页脚",
+        "footnote" => "脚注",
+        "endnote" => "尾注",
+        "comment" => "批注",
+        "glossary" => "术语库",
+        "chart" => "图表",
+        "diagram" => "图示",
+        _ => "文档内容",
+    };
+    format!("{label} · 内容 {part_number}")
 }
 
 fn text_review_data_error() -> DesktopCommandError {
@@ -1459,6 +1531,19 @@ fn text_review_error(error: WorkflowError) -> DesktopCommandError {
     }
 }
 
+fn docx_review_error(error: DocxWorkflowError) -> DesktopCommandError {
+    match error {
+        DocxWorkflowError::TextDetection(error) => text_review_error(error),
+        DocxWorkflowError::InvalidFinding(_) | DocxWorkflowError::EmbeddedImageTaskMismatch(_) => {
+            DesktopCommandError::new("REVIEW_DATA_INVALID", "DOCX 复核数据无效，请重新扫描。")
+        }
+        DocxWorkflowError::InvalidPolicy(_) | DocxWorkflowError::PolicySnapshotMismatch => {
+            DesktopCommandError::new("POLICY_INVALID", "任务策略快照无效，请重新扫描。")
+        }
+        _ => DesktopCommandError::new("REVIEW_UPDATE_FAILED", "DOCX 复核修改未能安全保存。"),
+    }
+}
+
 fn run_scan_batch(app: AppHandle, candidates: Vec<ScanCandidate>) {
     let (context, runtime_failure_code) =
         match runtime_context(&app, app.state::<DesktopState>().inner()) {
@@ -1509,6 +1594,9 @@ fn run_scan_batch(app: AppHandle, candidates: Vec<ScanCandidate>) {
             DesktopFileKind::Text => {
                 scan_text_candidate(&app, &candidate, context.as_deref(), &policy)
             }
+            DesktopFileKind::Word => {
+                scan_docx_candidate(&app, &candidate, context.as_deref(), &policy)
+            }
             DesktopFileKind::Image => scan_image_candidate(
                 &app,
                 &candidate,
@@ -1553,6 +1641,48 @@ fn scan_text_candidate(
         }),
         Err(error) => update_scan(app, &candidate.id, |record| {
             record.block(text_error_code(&error))
+        }),
+    }
+}
+
+fn scan_docx_candidate(
+    app: &AppHandle,
+    candidate: &ScanCandidate,
+    context: Option<&RuntimeContext>,
+    policy: &PolicyConfig,
+) {
+    let Some(path) = registered_source_path(&candidate.source) else {
+        update_scan(app, &candidate.id, |record| {
+            record.block("SCAN_SOURCE_INVALID")
+        });
+        return;
+    };
+    update_scan(app, &candidate.id, |record| {
+        record.stage = DesktopScanStage::DetectingText;
+        record.total_units = 1;
+    });
+    let result = scan_docx_with_policy_and_images(
+        path,
+        policy,
+        context.map(|context| &context.registry),
+        context.map(|context| context.ocr_runtime_id.as_str()),
+    );
+    if candidate.cancel_requested.load(Ordering::Acquire) {
+        update_scan(app, &candidate.id, ScanRecord::cancel);
+        return;
+    }
+    match result {
+        Ok(task) => {
+            if let Some(code) = docx_blocking_diagnostic(&task) {
+                update_scan(app, &candidate.id, |record| record.block(code));
+            } else {
+                update_scan(app, &candidate.id, |record| {
+                    record.finish(StoredScanTask::Docx(Box::new(task)))
+                });
+            }
+        }
+        Err(error) => update_scan(app, &candidate.id, |record| {
+            record.block(docx_error_code(&error))
         }),
     }
 }
@@ -1831,6 +1961,58 @@ fn pdf_task_metrics(task: &PdfTaskDraft) -> ScanMetrics {
     }
 }
 
+fn docx_task_metrics(task: &DocxTaskDraft) -> ScanMetrics {
+    let image_groups = docx_image_group_states(task);
+    ScanMetrics {
+        finding_groups: task.findings.len() + image_groups.len(),
+        unreviewed_groups: task
+            .findings
+            .iter()
+            .filter(|finding| !finding.reviewed)
+            .count()
+            + image_groups.values().filter(|reviewed| !**reviewed).count(),
+        page_count: task.embedded_images.len(),
+        diagnostic_count: task.diagnostics.len()
+            + task
+                .embedded_images
+                .iter()
+                .map(|embedded| embedded.task.diagnostics.len())
+                .sum::<usize>(),
+    }
+}
+
+fn docx_image_group_states(task: &DocxTaskDraft) -> BTreeMap<(usize, &str), bool> {
+    let mut groups = BTreeMap::new();
+    for (image_index, embedded) in task.embedded_images.iter().enumerate() {
+        for finding in &embedded.task.findings {
+            groups
+                .entry((image_index, finding.group_id.as_str()))
+                .and_modify(|reviewed| *reviewed &= finding.reviewed)
+                .or_insert(finding.reviewed);
+        }
+    }
+    groups
+}
+
+fn docx_unreviewed_image_groups(task: &DocxTaskDraft) -> usize {
+    docx_image_group_states(task)
+        .values()
+        .filter(|reviewed| !**reviewed)
+        .count()
+}
+
+fn docx_blocking_diagnostic(task: &DocxTaskDraft) -> Option<&'static str> {
+    task.diagnostics
+        .iter()
+        .find_map(|diagnostic| match diagnostic.code.as_str() {
+            "DOCX_EMBEDDED_IMAGE_FORMAT_UNSUPPORTED" => Some("DOCX_EMBEDDED_IMAGE_UNSUPPORTED"),
+            "DOCX_EMBEDDED_IMAGES_PENDING" => Some("OCR_RUNTIME_MISSING"),
+            "DOCX_EMBEDDED_OBJECTS_UNSUPPORTED" => Some("DOCX_EMBEDDED_OBJECTS_UNSUPPORTED"),
+            "DOCX_ACTIVE_CONTENT_UNSUPPORTED" => Some("DOCX_ACTIVE_CONTENT_UNSUPPORTED"),
+            _ => None,
+        })
+}
+
 fn image_error_code(error: &ImageWorkflowError) -> &'static str {
     match error {
         ImageWorkflowError::ImageTooLarge | ImageWorkflowError::ImageDimensionsTooLarge => {
@@ -1856,6 +2038,27 @@ fn text_error_code(error: &WorkflowError) -> &'static str {
     }
 }
 
+fn docx_error_code(error: &DocxWorkflowError) -> &'static str {
+    match error {
+        DocxWorkflowError::PackageTooLarge
+        | DocxWorkflowError::TooManyEntries
+        | DocxWorkflowError::EntryTooLarge(_)
+        | DocxWorkflowError::SuspiciousCompression(_) => "DOCX_LIMIT_EXCEEDED",
+        DocxWorkflowError::EncryptedEntry => "ENCRYPTED_DOCX_UNSUPPORTED",
+        DocxWorkflowError::UnsupportedCompression(_)
+        | DocxWorkflowError::UnsafeEntryName(_)
+        | DocxWorkflowError::MissingRequiredEntry(_)
+        | DocxWorkflowError::InvalidXml(_)
+        | DocxWorkflowError::MissingTextContent
+        | DocxWorkflowError::Zip(_) => "INVALID_DOCX",
+        DocxWorkflowError::TextDetection(error) => text_error_code(error),
+        DocxWorkflowError::EmbeddedImage(error) => image_error_code(error),
+        DocxWorkflowError::InvalidPolicy(_) => "POLICY_INVALID",
+        DocxWorkflowError::Io(_) => "DOCX_READ_FAILED",
+        _ => "DOCX_SCAN_FAILED",
+    }
+}
+
 fn text_export_error_code(error: &WorkflowError) -> &'static str {
     match error {
         WorkflowError::OutputExists(_) => "OUTPUT_EXISTS",
@@ -1873,6 +2076,34 @@ fn text_export_error_code(error: &WorkflowError) -> &'static str {
         | WorkflowError::ReplacementTooLong => "REVIEW_DATA_INVALID",
         WorkflowError::Io(_) => "OUTPUT_WRITE_FAILED",
         _ => "TEXT_EXPORT_FAILED",
+    }
+}
+
+fn docx_export_error_code(error: &DocxWorkflowError) -> &'static str {
+    match error {
+        DocxWorkflowError::OutputExists(_) => "OUTPUT_EXISTS",
+        DocxWorkflowError::WouldOverwriteSource => "OUTPUT_CONFLICT",
+        DocxWorkflowError::UnreviewedFindings(_) => "REVIEW_REQUIRED",
+        DocxWorkflowError::VerificationFailed(_) => "VERIFICATION_FAILED",
+        DocxWorkflowError::SourceChanged => "SOURCE_CHANGED",
+        DocxWorkflowError::EmbeddedImagesUnsupported
+        | DocxWorkflowError::EmbeddedImageRuntimeRequired => "OCR_RUNTIME_MISSING",
+        DocxWorkflowError::UnsupportedEmbeddedImageType(_) => "DOCX_EMBEDDED_IMAGE_UNSUPPORTED",
+        DocxWorkflowError::EmbeddedObjectsUnsupported => "DOCX_EMBEDDED_OBJECTS_UNSUPPORTED",
+        DocxWorkflowError::ActiveContentUnsupported => "DOCX_ACTIVE_CONTENT_UNSUPPORTED",
+        DocxWorkflowError::ExternalRelationshipUnsupported(_) => {
+            "DOCX_EXTERNAL_RELATIONSHIP_UNSUPPORTED"
+        }
+        DocxWorkflowError::InvalidPolicy(_) | DocxWorkflowError::PolicySnapshotMismatch => {
+            "POLICY_INVALID"
+        }
+        DocxWorkflowError::InvalidFinding(_) | DocxWorkflowError::EmbeddedImageTaskMismatch(_) => {
+            "REVIEW_DATA_INVALID"
+        }
+        DocxWorkflowError::TextDetection(error) => text_export_error_code(error),
+        DocxWorkflowError::EmbeddedImage(error) => image_export_error_code(error),
+        DocxWorkflowError::Io(_) | DocxWorkflowError::Zip(_) => "OUTPUT_WRITE_FAILED",
+        _ => "DOCX_EXPORT_FAILED",
     }
 }
 
@@ -1949,7 +2180,10 @@ fn inspect_file(id: String, display_name: String, path: &Path, size_bytes: u64) 
         (false, false, "FILE_TOO_LARGE")
     } else if matches!(
         kind,
-        DesktopFileKind::Text | DesktopFileKind::Pdf | DesktopFileKind::Image
+        DesktopFileKind::Text
+            | DesktopFileKind::Word
+            | DesktopFileKind::Pdf
+            | DesktopFileKind::Image
     ) {
         (true, true, "READY")
     } else {
@@ -2085,20 +2319,25 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use tempfile::tempdir;
 
     use llamask_core::model::{EntityType, ImageFinding, ImageRect};
-    use llamask_core::{PolicyConfig, scan_text_with_policy};
+    use llamask_core::{PolicyConfig, scan_docx_with_policy, scan_text_with_policy};
 
     use super::{
         DesktopFileKind, DesktopOutputKind, DesktopScanStage, DesktopScanStatus, DesktopSourceKind,
-        DesktopState, MAX_TEXT_BYTES, ScanRecord, export_name_and_extension, inspect_file,
-        register_clipboard_text, register_files, review_findings, text_review_findings,
+        DesktopState, MAX_TEXT_BYTES, ScanRecord, docx_task_metrics, docx_text_review_findings,
+        export_name_and_extension, inspect_file, register_clipboard_text, register_files,
+        review_findings, text_review_findings,
     };
+
+    fn docx_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/docx/comprehensive.docx")
+    }
 
     #[test]
     fn classifies_supported_pdf_without_returning_its_path() {
@@ -2124,6 +2363,23 @@ mod tests {
         assert!(candidate.ready);
         assert!(candidate.scan_supported);
         assert_eq!(candidate.reason_code, "READY");
+    }
+
+    #[test]
+    fn classifies_docx_as_scannable_without_exposing_its_path() {
+        let candidate = inspect_file(
+            "file-3".to_owned(),
+            "proposal.docx".to_owned(),
+            Path::new("/private/customer/proposal.docx"),
+            512,
+        );
+        let json = serde_json::to_string(&candidate).unwrap();
+
+        assert_eq!(candidate.kind, DesktopFileKind::Word);
+        assert!(candidate.ready);
+        assert!(candidate.scan_supported);
+        assert_eq!(candidate.reason_code, "READY");
+        assert!(!json.contains("/private/customer"));
     }
 
     #[test]
@@ -2288,6 +2544,28 @@ mod tests {
         assert_eq!(findings[0].context_after.chars().count(), 80);
         assert_eq!(findings[0].matched_text, "case@example.com");
         assert!(!json.contains("stdin://clipboard"));
+        assert!(!json.contains("sourcePath"));
+    }
+
+    #[test]
+    fn docx_review_payload_uses_safe_section_labels_without_ooxml_locators() {
+        let mut policy = PolicyConfig::default();
+        policy.detectors.clear();
+        let task = scan_docx_with_policy(&docx_fixture_path(), &policy, None).unwrap();
+        let findings = docx_text_review_findings(&task).unwrap();
+        let metrics = docx_task_metrics(&task);
+        let json = serde_json::to_string(&findings).unwrap();
+
+        assert_eq!(metrics.finding_groups, findings.len());
+        assert_eq!(metrics.page_count, 0);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.section_label.is_some())
+        );
+        assert!(json.contains("正文 · 内容 1"));
+        assert!(!json.contains("word/document.xml"));
+        assert!(!json.contains("comprehensive.docx"));
         assert!(!json.contains("sourcePath"));
     }
 
