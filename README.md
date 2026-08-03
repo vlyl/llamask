@@ -337,17 +337,16 @@ support beyond PNG/JPEG.
 Desktop development lives under `apps/llamask-desktop`. It provides a minimal
 Tauri 2 + React/TypeScript window, restricted file selection, drag and drop
 import, a Rust session-path registry, format and size preflight checks, and a
-task-list interface. TXT, Markdown, DOCX, XLSX, PDF, PNG, and JPEG use the real
-`llamask-core` scanner on a controlled background worker with path-free progress
-events and cooperative cancellation. Sensitive scan drafts remain in Rust
-memory. Image/PDF review requests only a bounded, re-encoded page preview and
+task-list interface. TXT, Markdown, DOCX, XLSX, PPTX, PDF, PNG, and JPEG use the
+real `llamask-core` scanner on a controlled background worker with path-free
+progress events and cooperative cancellation. Sensitive scan drafts remain in
+Rust memory. Image/PDF review requests only a bounded, re-encoded page preview and
 geometry. Text review requests only the matched value and 80 Unicode characters
 of context on each side, never the source path or whole document. DOCX findings
 also include only a safe section label such as body, header, or comment; OOXML
 locators stay inside the Rust task. Embedded PNG/JPEG images can be reviewed in
 the same editable mask workspace after their source package hash is revalidated.
-Clipboard
-text can now be imported through an explicit user action, scanned and reviewed
+Clipboard text can now be imported through an explicit user action, scanned and reviewed
 with the same bounded text workflow, and copied back only after fail-closed
 residual verification succeeds. Clipboard source text remains in Rust session
 memory and is never sent in progress events or written to application storage.
@@ -359,6 +358,11 @@ XLSX review exposes only safe worksheet ordinals, cell references, and content
 types. Formula and cache findings for the same cell are reviewed atomically;
 sheet-name findings can only be explicitly retained. Embedded images share the
 same hash-validated mask workflow, and export reuses the Core workbook rewrite
-and residual checks. The next increment connects PPTX, followed by batch output.
+and residual checks. PPTX review exposes only safe slide/story ordinals and
+bounded context for slides, notes, comments, masters, layouts, and diagrams.
+Embedded images share the same hash-validated mask workflow; unsupported charts,
+external data, embedded objects, active content, and media fail closed before
+review. PPTX export reuses the Core package rewrite and independent residual
+checks. The next increment adds batch output and per-file failure isolation.
 See the desktop architecture document for development details and safety
 boundaries.

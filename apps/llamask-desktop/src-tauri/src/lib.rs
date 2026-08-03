@@ -13,15 +13,17 @@ use llamask_core::model::{DocumentPart, EntityType, Finding, ImageFinding};
 use llamask_core::sidecar::DetectorKind;
 use llamask_core::{
     DocxTaskDraft, DocxWorkflowError, ImageRect, ImageTaskDraft, ImageWorkflowError, PdfTaskDraft,
-    PdfWorkflowError, PolicyConfig, RuntimeRegistry, TaskDraft, WorkflowError, XlsxTaskDraft,
-    XlsxWorkflowError, add_manual_image_mask, export_docx_task_with_runtimes,
-    export_image_task_with_runtimes, export_pdf_task_with_runtimes, export_task_with_runtimes,
-    export_xlsx_task_with_runtimes, remove_manual_image_group, render_docx_embedded_image_preview,
-    render_image_task_preview, render_pdf_task_page_preview, render_task_with_runtimes,
+    PdfWorkflowError, PolicyConfig, PptxTaskDraft, PptxWorkflowError, RuntimeRegistry, TaskDraft,
+    WorkflowError, XlsxTaskDraft, XlsxWorkflowError, add_manual_image_mask,
+    export_docx_task_with_runtimes, export_image_task_with_runtimes, export_pdf_task_with_runtimes,
+    export_pptx_task_with_runtimes, export_task_with_runtimes, export_xlsx_task_with_runtimes,
+    remove_manual_image_group, render_docx_embedded_image_preview, render_image_task_preview,
+    render_pdf_task_page_preview, render_pptx_embedded_image_preview, render_task_with_runtimes,
     render_xlsx_embedded_image_preview, review_docx_finding, review_image_group,
-    review_text_finding, review_xlsx_finding, scan_docx_with_policy_and_images,
-    scan_image_with_policy, scan_path_with_policy, scan_pdf_with_policy_and_progress,
-    scan_text_with_policy, scan_xlsx_with_policy, update_image_mask,
+    review_pptx_finding, review_text_finding, review_xlsx_finding,
+    scan_docx_with_policy_and_images, scan_image_with_policy, scan_path_with_policy,
+    scan_pdf_with_policy_and_progress, scan_pptx_with_policy_and_images, scan_text_with_policy,
+    scan_xlsx_with_policy, update_image_mask,
 };
 use serde::Serialize;
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
@@ -280,6 +282,7 @@ enum StoredScanTask {
     Pdf(Box<PdfTaskDraft>),
     Docx(Box<DocxTaskDraft>),
     Xlsx(Box<XlsxTaskDraft>),
+    Pptx(Box<PptxTaskDraft>),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -321,6 +324,7 @@ impl StoredScanTask {
             Self::Pdf(task) => pdf_task_metrics(task),
             Self::Docx(task) => docx_task_metrics(task),
             Self::Xlsx(task) => xlsx_task_metrics(task),
+            Self::Pptx(task) => pptx_task_metrics(task),
         }
     }
 
@@ -331,6 +335,7 @@ impl StoredScanTask {
             Self::Pdf(task) => task.pages.len(),
             Self::Docx(task) => task.embedded_images.len(),
             Self::Xlsx(task) => task.embedded_images.len(),
+            Self::Pptx(task) => task.embedded_images.len(),
         }
     }
 
@@ -348,6 +353,10 @@ impl StoredScanTask {
                 .and_then(|index| task.embedded_images.get(index))
                 .map(|embedded| &embedded.task),
             Self::Xlsx(task) => page_number
+                .checked_sub(1)
+                .and_then(|index| task.embedded_images.get(index))
+                .map(|embedded| &embedded.task),
+            Self::Pptx(task) => page_number
                 .checked_sub(1)
                 .and_then(|index| task.embedded_images.get(index))
                 .map(|embedded| &embedded.task),
@@ -369,6 +378,10 @@ impl StoredScanTask {
                 .and_then(|index| task.embedded_images.get_mut(index))
                 .map(|embedded| &mut embedded.task),
             Self::Xlsx(task) => page_number
+                .checked_sub(1)
+                .and_then(|index| task.embedded_images.get_mut(index))
+                .map(|embedded| &mut embedded.task),
+            Self::Pptx(task) => page_number
                 .checked_sub(1)
                 .and_then(|index| task.embedded_images.get_mut(index))
                 .map(|embedded| &mut embedded.task),
@@ -522,8 +535,10 @@ fn desktop_capabilities() -> DesktopCapabilities {
         offline_only: true,
         max_import_files: MAX_IMPORT_FILES,
         supported_extensions: SUPPORTED_EXTENSIONS.to_vec(),
-        scan_extensions: vec!["txt", "md", "docx", "xlsx", "pdf", "png", "jpg", "jpeg"],
-        milestone: "xlsx-docx-clipboard-text-image-pdf-review-export",
+        scan_extensions: vec![
+            "txt", "md", "docx", "xlsx", "pptx", "pdf", "png", "jpg", "jpeg",
+        ],
+        milestone: "pptx-xlsx-docx-clipboard-text-image-pdf-review-export",
     }
 }
 
@@ -817,7 +832,7 @@ fn start_registered_scans(
         state.worker_running.store(false, Ordering::Release);
         return Err(DesktopCommandError::new(
             "NO_SCANNABLE_FILES",
-            "请先导入剪贴板文本、TXT、Markdown、DOCX、XLSX、PDF、PNG 或 JPEG。",
+            "请先导入剪贴板文本、TXT、Markdown、DOCX、XLSX、PPTX、PDF、PNG 或 JPEG。",
         ));
     }
 
@@ -909,6 +924,8 @@ async fn review_scan_page(
             .map_err(|_| "DOCX_IMAGE_PREVIEW_FAILED"),
         StoredScanTask::Xlsx(task) => render_xlsx_embedded_image_preview(task, page_number)
             .map_err(|_| "XLSX_IMAGE_PREVIEW_FAILED"),
+        StoredScanTask::Pptx(task) => render_pptx_embedded_image_preview(task, page_number)
+            .map_err(|_| "PPTX_IMAGE_PREVIEW_FAILED"),
         _ => Err("REVIEW_PAGE_INVALID"),
     })
     .await
@@ -1016,6 +1033,13 @@ fn review_text_scan(
                 unreviewed_image_groups: xlsx_unreviewed_image_groups(task),
                 findings: xlsx_text_review_findings(task)?,
             },
+            Some(StoredScanTask::Pptx(task)) => DesktopTextReview {
+                id,
+                total_characters: task.document.parts.iter().map(|part| part.char_len).sum(),
+                embedded_image_count: task.embedded_images.len(),
+                unreviewed_image_groups: pptx_unreviewed_image_groups(task),
+                findings: pptx_text_review_findings(task)?,
+            },
             _ => {
                 return Err(DesktopCommandError::new(
                     "TEXT_REVIEW_UNAVAILABLE",
@@ -1055,6 +1079,11 @@ fn set_text_review_finding(
                 review_xlsx_finding(task, &finding_id, selected, replacement.as_deref())
                     .map_err(xlsx_review_error)?;
                 xlsx_text_review_findings(task)?
+            }
+            Some(StoredScanTask::Pptx(task)) => {
+                review_pptx_finding(task, &finding_id, selected, replacement.as_deref())
+                    .map_err(pptx_review_error)?;
+                pptx_text_review_findings(task)?
             }
             _ => {
                 return Err(DesktopCommandError::new(
@@ -1122,7 +1151,10 @@ fn choose_and_export_scan(
         Err(_)
             if matches!(
                 file_kind,
-                DesktopFileKind::Text | DesktopFileKind::Word | DesktopFileKind::Spreadsheet
+                DesktopFileKind::Text
+                    | DesktopFileKind::Word
+                    | DesktopFileKind::Spreadsheet
+                    | DesktopFileKind::Presentation
             ) =>
         {
             None
@@ -1208,6 +1240,13 @@ fn choose_and_export_scan(
             )
             .map(|report| report.complete)
             .map_err(|error| xlsx_export_error_code(&error)),
+            StoredScanTask::Pptx(task) => export_pptx_task_with_runtimes(
+                task,
+                &output,
+                context.as_deref().map(|context| &context.registry),
+            )
+            .map(|report| report.complete)
+            .map_err(|error| pptx_export_error_code(&error)),
         })
         .await;
         match result {
@@ -1444,11 +1483,22 @@ fn xlsx_text_review_findings(
     )
 }
 
+fn pptx_text_review_findings(
+    task: &PptxTaskDraft,
+) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
+    document_text_review_findings(
+        &task.document.parts,
+        &task.findings,
+        TextReviewPresentation::Pptx,
+    )
+}
+
 #[derive(Clone, Copy)]
 enum TextReviewPresentation {
     Plain,
     Docx,
     Xlsx,
+    Pptx,
 }
 
 fn document_text_review_findings(
@@ -1486,6 +1536,7 @@ fn document_text_review_findings(
                     None,
                 ),
                 TextReviewPresentation::Xlsx => xlsx_review_presentation(part, part_number),
+                TextReviewPresentation::Pptx => pptx_review_presentation(part, part_number),
             };
             let before_start = finding.start.saturating_sub(TEXT_REVIEW_CONTEXT_CHARS);
             let after_end = (finding.end + TEXT_REVIEW_CONTEXT_CHARS).min(characters.len());
@@ -1588,6 +1639,62 @@ fn xlsx_review_presentation(
         _ => None,
     };
     (Some(label), can_apply, review_note)
+}
+
+fn pptx_review_presentation(
+    part: &DocumentPart,
+    part_number: usize,
+) -> (Option<String>, bool, Option<String>) {
+    let paragraph = safe_marker_ordinal(&part.locator, "#p");
+    let text_node = safe_marker_ordinal(&part.locator, "#t");
+    let position = paragraph
+        .map(|number| format!("段落 {number}"))
+        .or_else(|| text_node.map(|number| format!("文本 {number}")))
+        .unwrap_or_else(|| format!("内容 {part_number}"));
+    let label = match part.kind.as_str() {
+        "slide" => safe_locator_ordinal(&part.locator, "ppt/slides/slide").map_or_else(
+            || format!("幻灯片 · {position}"),
+            |slide| format!("幻灯片 {slide} · {position}"),
+        ),
+        "notes" => safe_locator_ordinal(&part.locator, "ppt/notesSlides/notesSlide").map_or_else(
+            || format!("演讲者备注 · {position}"),
+            |slide| format!("幻灯片 {slide} · 备注 · {position}"),
+        ),
+        "comment" => safe_locator_ordinal(&part.locator, "ppt/comments/comment")
+            .or_else(|| safe_locator_ordinal(&part.locator, "ppt/comments/comments"))
+            .map_or_else(
+                || format!("批注 · {position}"),
+                |comment| format!("批注 {comment} · {position}"),
+            ),
+        "slide_master" => safe_locator_ordinal(&part.locator, "ppt/slideMasters/slideMaster")
+            .map_or_else(
+                || format!("幻灯片母版 · {position}"),
+                |master| format!("幻灯片母版 {master} · {position}"),
+            ),
+        "slide_layout" => safe_locator_ordinal(&part.locator, "ppt/slideLayouts/slideLayout")
+            .map_or_else(
+                || format!("幻灯片版式 · {position}"),
+                |layout| format!("幻灯片版式 {layout} · {position}"),
+            ),
+        "notes_master" => safe_locator_ordinal(&part.locator, "ppt/notesMasters/notesMaster")
+            .map_or_else(
+                || format!("备注母版 · {position}"),
+                |master| format!("备注母版 {master} · {position}"),
+            ),
+        "handout_master" => safe_locator_ordinal(&part.locator, "ppt/handoutMasters/handoutMaster")
+            .map_or_else(
+                || format!("讲义母版 · {position}"),
+                |master| format!("讲义母版 {master} · {position}"),
+            ),
+        "diagram" => format!("关系图 · {position}"),
+        _ => format!("演示文稿内容 · {position}"),
+    };
+    let review_note = matches!(
+        part.kind.as_str(),
+        "slide_master" | "slide_layout" | "notes_master" | "handout_master"
+    )
+    .then(|| "母版或版式内容可能影响多张页面；替换会保留现有文本样式。".to_owned());
+    (Some(label), true, review_note)
 }
 
 fn safe_locator_ordinal(locator: &str, prefix: &str) -> Option<usize> {
@@ -1736,6 +1843,19 @@ fn xlsx_review_error(error: XlsxWorkflowError) -> DesktopCommandError {
     }
 }
 
+fn pptx_review_error(error: PptxWorkflowError) -> DesktopCommandError {
+    match error {
+        PptxWorkflowError::TextDetection(error) => text_review_error(error),
+        PptxWorkflowError::InvalidFinding(_) | PptxWorkflowError::EmbeddedImageTaskMismatch(_) => {
+            DesktopCommandError::new("REVIEW_DATA_INVALID", "PPTX 复核数据无效，请重新扫描。")
+        }
+        PptxWorkflowError::InvalidPolicy(_) | PptxWorkflowError::PolicySnapshotMismatch => {
+            DesktopCommandError::new("POLICY_INVALID", "任务策略快照无效，请重新扫描。")
+        }
+        _ => DesktopCommandError::new("REVIEW_UPDATE_FAILED", "PPTX 复核修改未能安全保存。"),
+    }
+}
+
 fn run_scan_batch(app: AppHandle, candidates: Vec<ScanCandidate>) {
     let (context, runtime_failure_code) =
         match runtime_context(&app, app.state::<DesktopState>().inner()) {
@@ -1791,6 +1911,9 @@ fn run_scan_batch(app: AppHandle, candidates: Vec<ScanCandidate>) {
             }
             DesktopFileKind::Spreadsheet => {
                 scan_xlsx_candidate(&app, &candidate, context.as_deref(), &policy)
+            }
+            DesktopFileKind::Presentation => {
+                scan_pptx_candidate(&app, &candidate, context.as_deref(), &policy)
             }
             DesktopFileKind::Image => scan_image_candidate(
                 &app,
@@ -1920,6 +2043,48 @@ fn scan_xlsx_candidate(
         }
         Err(error) => update_scan(app, &candidate.id, |record| {
             record.block(xlsx_error_code(&error))
+        }),
+    }
+}
+
+fn scan_pptx_candidate(
+    app: &AppHandle,
+    candidate: &ScanCandidate,
+    context: Option<&RuntimeContext>,
+    policy: &PolicyConfig,
+) {
+    let Some(path) = registered_source_path(&candidate.source) else {
+        update_scan(app, &candidate.id, |record| {
+            record.block("SCAN_SOURCE_INVALID")
+        });
+        return;
+    };
+    update_scan(app, &candidate.id, |record| {
+        record.stage = DesktopScanStage::DetectingText;
+        record.total_units = 1;
+    });
+    let result = scan_pptx_with_policy_and_images(
+        path,
+        policy,
+        context.map(|context| &context.registry),
+        context.map(|context| context.ocr_runtime_id.as_str()),
+    );
+    if candidate.cancel_requested.load(Ordering::Acquire) {
+        update_scan(app, &candidate.id, ScanRecord::cancel);
+        return;
+    }
+    match result {
+        Ok(task) => {
+            if let Some(code) = pptx_blocking_diagnostic(&task) {
+                update_scan(app, &candidate.id, |record| record.block(code));
+            } else {
+                update_scan(app, &candidate.id, |record| {
+                    record.finish(StoredScanTask::Pptx(Box::new(task)))
+                });
+            }
+        }
+        Err(error) => update_scan(app, &candidate.id, |record| {
+            record.block(pptx_error_code(&error))
         }),
     }
 }
@@ -2315,6 +2480,58 @@ fn image_error_code(error: &ImageWorkflowError) -> &'static str {
     }
 }
 
+fn pptx_task_metrics(task: &PptxTaskDraft) -> ScanMetrics {
+    let image_groups = pptx_image_group_states(task);
+    ScanMetrics {
+        finding_groups: task.findings.len() + image_groups.len(),
+        unreviewed_groups: task
+            .findings
+            .iter()
+            .filter(|finding| !finding.reviewed)
+            .count()
+            + image_groups.values().filter(|reviewed| !**reviewed).count(),
+        page_count: task.embedded_images.len(),
+        diagnostic_count: task.diagnostics.len()
+            + task
+                .embedded_images
+                .iter()
+                .map(|embedded| embedded.task.diagnostics.len())
+                .sum::<usize>(),
+    }
+}
+
+fn pptx_image_group_states(task: &PptxTaskDraft) -> BTreeMap<(usize, &str), bool> {
+    let mut groups = BTreeMap::new();
+    for (image_index, embedded) in task.embedded_images.iter().enumerate() {
+        for finding in &embedded.task.findings {
+            groups
+                .entry((image_index, finding.group_id.as_str()))
+                .and_modify(|reviewed| *reviewed &= finding.reviewed)
+                .or_insert(finding.reviewed);
+        }
+    }
+    groups
+}
+
+fn pptx_unreviewed_image_groups(task: &PptxTaskDraft) -> usize {
+    pptx_image_group_states(task)
+        .values()
+        .filter(|reviewed| !**reviewed)
+        .count()
+}
+
+fn pptx_blocking_diagnostic(task: &PptxTaskDraft) -> Option<&'static str> {
+    task.diagnostics
+        .iter()
+        .find_map(|diagnostic| match diagnostic.code.as_str() {
+            "PPTX_EMBEDDED_IMAGE_FORMAT_UNSUPPORTED" => Some("PPTX_EMBEDDED_IMAGE_UNSUPPORTED"),
+            "PPTX_EMBEDDED_IMAGES_PENDING" => Some("OCR_RUNTIME_MISSING"),
+            "PPTX_EMBEDDED_OBJECTS_UNSUPPORTED" => Some("PPTX_EMBEDDED_OBJECTS_UNSUPPORTED"),
+            "PPTX_ACTIVE_CONTENT_UNSUPPORTED" => Some("PPTX_ACTIVE_CONTENT_UNSUPPORTED"),
+            _ => None,
+        })
+}
+
 fn text_error_code(error: &WorkflowError) -> &'static str {
     match error {
         WorkflowError::UnsupportedEncoding(_) => "TEXT_ENCODING_UNSUPPORTED",
@@ -2365,6 +2582,27 @@ fn xlsx_error_code(error: &XlsxWorkflowError) -> &'static str {
         XlsxWorkflowError::InvalidPolicy(_) => "POLICY_INVALID",
         XlsxWorkflowError::Io(_) => "XLSX_READ_FAILED",
         _ => "XLSX_SCAN_FAILED",
+    }
+}
+
+fn pptx_error_code(error: &PptxWorkflowError) -> &'static str {
+    match error {
+        PptxWorkflowError::PackageTooLarge
+        | PptxWorkflowError::TooManyEntries
+        | PptxWorkflowError::EntryTooLarge(_)
+        | PptxWorkflowError::SuspiciousCompression(_) => "PPTX_LIMIT_EXCEEDED",
+        PptxWorkflowError::EncryptedEntry => "ENCRYPTED_PPTX_UNSUPPORTED",
+        PptxWorkflowError::UnsupportedCompression(_)
+        | PptxWorkflowError::UnsafeEntryName(_)
+        | PptxWorkflowError::MissingRequiredEntry(_)
+        | PptxWorkflowError::InvalidXml(_)
+        | PptxWorkflowError::MissingTextContent
+        | PptxWorkflowError::Zip(_) => "INVALID_PPTX",
+        PptxWorkflowError::TextDetection(error) => text_error_code(error),
+        PptxWorkflowError::EmbeddedImage(error) => image_error_code(error),
+        PptxWorkflowError::InvalidPolicy(_) => "POLICY_INVALID",
+        PptxWorkflowError::Io(_) => "PPTX_READ_FAILED",
+        _ => "PPTX_SCAN_FAILED",
     }
 }
 
@@ -2439,6 +2677,35 @@ fn xlsx_export_error_code(error: &XlsxWorkflowError) -> &'static str {
         XlsxWorkflowError::EmbeddedImage(error) => image_export_error_code(error),
         XlsxWorkflowError::Io(_) | XlsxWorkflowError::Zip(_) => "OUTPUT_WRITE_FAILED",
         _ => "XLSX_EXPORT_FAILED",
+    }
+}
+
+fn pptx_export_error_code(error: &PptxWorkflowError) -> &'static str {
+    match error {
+        PptxWorkflowError::OutputExists(_) => "OUTPUT_EXISTS",
+        PptxWorkflowError::WouldOverwriteSource => "OUTPUT_CONFLICT",
+        PptxWorkflowError::OutputTypeMismatch => "OUTPUT_TYPE_INVALID",
+        PptxWorkflowError::UnreviewedFindings(_) => "REVIEW_REQUIRED",
+        PptxWorkflowError::VerificationFailed(_) => "VERIFICATION_FAILED",
+        PptxWorkflowError::SourceChanged => "SOURCE_CHANGED",
+        PptxWorkflowError::EmbeddedImagesUnsupported
+        | PptxWorkflowError::EmbeddedImageRuntimeRequired => "OCR_RUNTIME_MISSING",
+        PptxWorkflowError::UnsupportedEmbeddedImageType(_) => "PPTX_EMBEDDED_IMAGE_UNSUPPORTED",
+        PptxWorkflowError::EmbeddedObjectsUnsupported => "PPTX_EMBEDDED_OBJECTS_UNSUPPORTED",
+        PptxWorkflowError::ActiveContentUnsupported => "PPTX_ACTIVE_CONTENT_UNSUPPORTED",
+        PptxWorkflowError::ExternalRelationshipUnsupported(_) => {
+            "PPTX_EXTERNAL_RELATIONSHIP_UNSUPPORTED"
+        }
+        PptxWorkflowError::InvalidPolicy(_) | PptxWorkflowError::PolicySnapshotMismatch => {
+            "POLICY_INVALID"
+        }
+        PptxWorkflowError::InvalidFinding(_) | PptxWorkflowError::EmbeddedImageTaskMismatch(_) => {
+            "REVIEW_DATA_INVALID"
+        }
+        PptxWorkflowError::TextDetection(error) => text_export_error_code(error),
+        PptxWorkflowError::EmbeddedImage(error) => image_export_error_code(error),
+        PptxWorkflowError::Io(_) | PptxWorkflowError::Zip(_) => "OUTPUT_WRITE_FAILED",
+        _ => "PPTX_EXPORT_FAILED",
     }
 }
 
@@ -2518,6 +2785,7 @@ fn inspect_file(id: String, display_name: String, path: &Path, size_bytes: u64) 
         DesktopFileKind::Text
             | DesktopFileKind::Word
             | DesktopFileKind::Spreadsheet
+            | DesktopFileKind::Presentation
             | DesktopFileKind::Pdf
             | DesktopFileKind::Image
     ) {
@@ -2663,15 +2931,16 @@ mod tests {
 
     use llamask_core::model::{DocumentPart, EntityType, ImageFinding, ImageRect};
     use llamask_core::{
-        PolicyConfig, scan_docx_with_policy, scan_text_with_policy, scan_xlsx_with_policy,
+        PolicyConfig, scan_docx_with_policy, scan_pptx_with_policy, scan_text_with_policy,
+        scan_xlsx_with_policy,
     };
 
     use super::{
         DesktopFileKind, DesktopOutputKind, DesktopScanStage, DesktopScanStatus, DesktopSourceKind,
         DesktopState, MAX_TEXT_BYTES, ScanRecord, docx_task_metrics, docx_text_review_findings,
-        export_name_and_extension, inspect_file, register_clipboard_text, register_files,
-        review_findings, text_review_findings, xlsx_review_presentation, xlsx_task_metrics,
-        xlsx_text_review_findings,
+        export_name_and_extension, inspect_file, pptx_task_metrics, pptx_text_review_findings,
+        register_clipboard_text, register_files, review_findings, text_review_findings,
+        xlsx_review_presentation, xlsx_task_metrics, xlsx_text_review_findings,
     };
 
     fn docx_fixture_path() -> PathBuf {
@@ -2680,6 +2949,10 @@ mod tests {
 
     fn xlsx_fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/xlsx/comprehensive.xlsx")
+    }
+
+    fn pptx_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/pptx/comprehensive.pptx")
     }
 
     #[test]
@@ -2736,6 +3009,23 @@ mod tests {
         let json = serde_json::to_string(&candidate).unwrap();
 
         assert_eq!(candidate.kind, DesktopFileKind::Spreadsheet);
+        assert!(candidate.ready);
+        assert!(candidate.scan_supported);
+        assert_eq!(candidate.reason_code, "READY");
+        assert!(!json.contains("/private/customer"));
+    }
+
+    #[test]
+    fn classifies_pptx_as_scannable_without_exposing_its_path() {
+        let candidate = inspect_file(
+            "file-5".to_owned(),
+            "briefing.pptx".to_owned(),
+            Path::new("/private/customer/briefing.pptx"),
+            2048,
+        );
+        let json = serde_json::to_string(&candidate).unwrap();
+
+        assert_eq!(candidate.kind, DesktopFileKind::Presentation);
         assert!(candidate.ready);
         assert!(candidate.scan_supported);
         assert_eq!(candidate.reason_code, "READY");
@@ -2981,6 +3271,41 @@ mod tests {
         assert!(!can_apply);
         assert!(note.is_some_and(|note| note.contains("只能明确保留")));
         assert!(!label.unwrap().contains("客户机密项目"));
+    }
+
+    #[test]
+    fn pptx_review_payload_uses_safe_story_labels_without_package_locators() {
+        let mut policy = PolicyConfig::default();
+        policy.detectors.clear();
+        let task = scan_pptx_with_policy(&pptx_fixture_path(), &policy, None).unwrap();
+        let findings = pptx_text_review_findings(&task).unwrap();
+        let metrics = pptx_task_metrics(&task);
+        let json = serde_json::to_string(&findings).unwrap();
+
+        assert_eq!(metrics.finding_groups, findings.len());
+        assert_eq!(metrics.page_count, 0);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.section_label.is_some() && finding.can_apply)
+        );
+        assert!(findings.iter().any(|finding| {
+            finding
+                .section_label
+                .as_deref()
+                .is_some_and(|label| label.starts_with("幻灯片 1 · 段落"))
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding
+                .review_note
+                .as_deref()
+                .is_some_and(|note| note.contains("母版或版式"))
+        }));
+        assert!(!json.contains("ppt/slides"));
+        assert!(!json.contains("ppt/slideMasters"));
+        assert!(!json.contains("#p"));
+        assert!(!json.contains("comprehensive.pptx"));
+        assert!(!json.contains("sourcePath"));
     }
 
     #[test]

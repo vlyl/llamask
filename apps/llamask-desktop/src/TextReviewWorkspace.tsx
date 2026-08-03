@@ -60,7 +60,8 @@ export function TextReviewWorkspace({
   const pendingFindings = review.findings.filter((finding) => !finding.reviewed).length;
   const pendingResults = pendingFindings + review.unreviewedImageGroups;
   const clipboardTask = file.sourceKind === "clipboard";
-  const structuredDocument = file.kind === "word" || file.kind === "spreadsheet";
+  const structuredDocument =
+    file.kind === "word" || file.kind === "spreadsheet" || file.kind === "presentation";
 
   return (
     <div className="review-backdrop" role="dialog" aria-modal="true" aria-label="文本脱敏结果复核">
