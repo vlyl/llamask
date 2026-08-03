@@ -67,8 +67,23 @@ cargo check -p llamask-desktop
   文件跳过。输出名自动避让已有文件和批内重名，单文件失败不会中断后续任务，
   批量完成事件只返回成功、失败、跳过与验证级别计数。
 - OCR 运行文件和权重必须通过注册表 SHA-256 校验；PDF 扫描还要求本地
-  `pdfinfo` 和 `pdftoppm` 就绪。
+  `pdfinfo` 和 `pdftoppm` 就绪。安装资源可把这两个工具及其依赖一并放入
+  注册表；执行前会重新校验，失败时不回退到未验证程序。
 
-该注册表和扫描草稿目前都是会话内状态，应用退出后清空。下一增量捆绑并
-验证双平台 OCR/PDF 工具与模型运行包；
+离线安装包构建先准备平台载荷：
+
+```bash
+python3 ../../scripts/prepare-desktop-runtime.py \
+  --recipe ../../config/runtime-packaging/macos-aarch64.example.json \
+  --payload /trusted/build/llamask-runtime-macos-aarch64 \
+  --output src-tauri/runtime-payload
+pnpm bundle:offline
+```
+
+Windows x64 使用对应示例配方与 `python`。生成器拒绝绝对路径、目录穿越、
+符号链接和已有输出；详细布局与发布门禁见
+`../../docs/14-offline-runtime-packaging.md`。真实双平台载荷、许可证和签名
+仍是下一增量，当前仓库不会把未经审核的大型二进制直接打入安装包。
+
+运行注册表和扫描草稿目前都是会话内状态，应用退出后清空；
 任务安全落盘与恢复仍未启用。

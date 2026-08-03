@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
+    "bundle:offline": "tauri build --config src-tauri/tauri.bundle.conf.json",
     "tauri": "tauri"
   },
   "dependencies": {

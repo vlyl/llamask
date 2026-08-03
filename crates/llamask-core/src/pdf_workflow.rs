@@ -21,7 +21,7 @@ use crate::model::{
     PdfSourceMetadata, PdfTaskDraft, PdfVerificationReport, TaskDiagnostic,
 };
 use crate::policy::{PolicyConfig, PolicyError};
-use crate::sidecar::RuntimeRegistry;
+use crate::sidecar::{RuntimeRegistry, RuntimeToolKind};
 use crate::text::sha256_hex;
 
 const PDF_TASK_SCHEMA_VERSION: u32 = 1;
@@ -104,6 +104,8 @@ pub enum PdfWorkflowError {
     EncryptedPdfUnsupported,
     #[error("缺少本地 PDF 工具：{0}")]
     ToolUnavailable(String),
+    #[error("本地 PDF 工具完整性校验失败：{0}")]
+    ToolIntegrityFailed(String),
     #[error("本地 PDF 工具执行失败：{0}")]
     ToolFailed(String),
     #[error("本地 PDF 工具执行超时：{0}")]
@@ -153,6 +155,12 @@ struct ToolOutput {
     stdout: Vec<u8>,
 }
 
+#[derive(Debug)]
+struct PdfTools {
+    pdfinfo: OsString,
+    pdftoppm: OsString,
+}
+
 pub fn scan_pdf_with_policy(
     path: &Path,
     policy: &PolicyConfig,
@@ -175,7 +183,8 @@ pub fn scan_pdf_with_policy_and_progress(
     let source_sha256 = sha256_hex(&source_bytes);
     let work = tempdir()?;
     let staged_pdf = stage_pdf(&work, &source_bytes)?;
-    let info = inspect_pdf(&staged_pdf, work.path())?;
+    let tools = resolve_pdf_tools(Some(runtimes))?;
+    let info = inspect_pdf(&staged_pdf, work.path(), &tools)?;
     validate_source_info(&info)?;
 
     if !on_progress(PdfScanProgress {
@@ -189,7 +198,13 @@ pub fn scan_pdf_with_policy_and_progress(
     let mut pages = Vec::with_capacity(info.pages);
     let mut total_pixels = 0_u64;
     for page_number in 1..=info.pages {
-        let rendered = render_page(&staged_pdf, page_number, DEFAULT_RASTER_DPI, work.path())?;
+        let rendered = render_page(
+            &staged_pdf,
+            page_number,
+            DEFAULT_RASTER_DPI,
+            work.path(),
+            &tools,
+        )?;
         let (width, height) = image::image_dimensions(&rendered)?;
         total_pixels = total_pixels
             .checked_add(u64::from(width) * u64::from(height))
@@ -233,6 +248,22 @@ pub fn render_pdf_task_page_preview(
     task: &PdfTaskDraft,
     page_number: usize,
 ) -> Result<ImagePreview, PdfWorkflowError> {
+    render_pdf_task_page_preview_inner(task, page_number, None)
+}
+
+pub fn render_pdf_task_page_preview_with_runtimes(
+    task: &PdfTaskDraft,
+    page_number: usize,
+    runtimes: &RuntimeRegistry,
+) -> Result<ImagePreview, PdfWorkflowError> {
+    render_pdf_task_page_preview_inner(task, page_number, Some(runtimes))
+}
+
+fn render_pdf_task_page_preview_inner(
+    task: &PdfTaskDraft,
+    page_number: usize,
+    runtimes: Option<&RuntimeRegistry>,
+) -> Result<ImagePreview, PdfWorkflowError> {
     task.policy.validate()?;
     if task.policy_id != task.policy.id {
         return Err(PdfWorkflowError::PolicySnapshotMismatch);
@@ -249,7 +280,8 @@ pub fn render_pdf_task_page_preview(
     }
     let work = tempdir()?;
     let staged_pdf = stage_pdf(&work, &source_bytes)?;
-    let info = inspect_pdf(&staged_pdf, work.path())?;
+    let tools = resolve_pdf_tools(runtimes)?;
+    let info = inspect_pdf(&staged_pdf, work.path(), &tools)?;
     validate_source_info(&info)?;
     if info.pages != task.source.pages || page_number == 0 || page_number > info.pages {
         return Err(PdfWorkflowError::SourceChanged);
@@ -259,6 +291,7 @@ pub fn render_pdf_task_page_preview(
         page_number,
         task.source.raster_dpi,
         work.path(),
+        &tools,
     )?;
     let image = image::load_from_memory_with_format(&fs::read(rendered)?, ImageFormat::Png)?;
     let (width, height) = image.dimensions();
@@ -302,7 +335,8 @@ pub fn export_pdf_task_with_runtimes(
     }
     let work = tempdir()?;
     let staged_pdf = stage_pdf(&work, &source_bytes)?;
-    let info = inspect_pdf(&staged_pdf, work.path())?;
+    let tools = resolve_pdf_tools(Some(runtimes))?;
+    let info = inspect_pdf(&staged_pdf, work.path(), &tools)?;
     validate_source_info(&info)?;
     if info.pages != task.source.pages {
         return Err(PdfWorkflowError::SourceChanged);
@@ -315,6 +349,7 @@ pub fn export_pdf_task_with_runtimes(
             page.page_number,
             task.source.raster_dpi,
             work.path(),
+            &tools,
         )?;
         let mut image_task = page.task.clone();
         image_task.source.path = rendered.to_string_lossy().into_owned();
@@ -326,7 +361,13 @@ pub fn export_pdf_task_with_runtimes(
     }
 
     let output_bytes = build_image_only_pdf(&redacted_pages, task.source.raster_dpi)?;
-    let report = verify_pdf_bytes(task, &output_bytes, &output.to_string_lossy(), runtimes)?;
+    let report = verify_pdf_bytes(
+        task,
+        &output_bytes,
+        &output.to_string_lossy(),
+        runtimes,
+        &tools,
+    )?;
     if !report.passed {
         return Err(PdfWorkflowError::VerificationFailed(
             report.unreviewed_findings
@@ -358,7 +399,8 @@ pub fn verify_pdf_file_with_runtimes(
 ) -> Result<PdfVerificationReport, PdfWorkflowError> {
     validate_task(task, runtimes)?;
     let bytes = read_pdf_limited(path)?;
-    verify_pdf_bytes(task, &bytes, &path.to_string_lossy(), runtimes)
+    let tools = resolve_pdf_tools(Some(runtimes))?;
+    verify_pdf_bytes(task, &bytes, &path.to_string_lossy(), runtimes, &tools)
 }
 
 fn verify_pdf_bytes(
@@ -366,10 +408,11 @@ fn verify_pdf_bytes(
     bytes: &[u8],
     checked_file: &str,
     runtimes: &RuntimeRegistry,
+    tools: &PdfTools,
 ) -> Result<PdfVerificationReport, PdfWorkflowError> {
     let work = tempdir()?;
     let staged_pdf = stage_pdf(&work, bytes)?;
-    let info = inspect_pdf(&staged_pdf, work.path())?;
+    let info = inspect_pdf(&staged_pdf, work.path(), tools)?;
     if info.encrypted || info.pages != task.pages.len() {
         return Err(PdfWorkflowError::OutputPageMismatch);
     }
@@ -400,6 +443,7 @@ fn verify_pdf_bytes(
             page.page_number,
             task.source.raster_dpi,
             work.path(),
+            tools,
         )?;
         let report = verify_image_file_with_runtimes(&page.task, &rendered, runtimes)?;
         pages_passed &= report.passed;
@@ -475,11 +519,14 @@ fn validate_source_info(info: &PdfInfo) -> Result<(), PdfWorkflowError> {
     Ok(())
 }
 
-fn inspect_pdf(path: &Path, cache_directory: &Path) -> Result<PdfInfo, PdfWorkflowError> {
-    let executable = tool_from_env("LLAMASK_PDFINFO", "pdfinfo");
+fn inspect_pdf(
+    path: &Path,
+    cache_directory: &Path,
+    tools: &PdfTools,
+) -> Result<PdfInfo, PdfWorkflowError> {
     let output = run_tool(
         "pdfinfo",
-        &executable,
+        &tools.pdfinfo,
         &[path.as_os_str().to_owned()],
         PDFINFO_TIMEOUT,
         cache_directory,
@@ -519,8 +566,8 @@ fn render_page(
     page_number: usize,
     dpi: u32,
     work_directory: &Path,
+    tools: &PdfTools,
 ) -> Result<PathBuf, PdfWorkflowError> {
-    let executable = tool_from_env("LLAMASK_PDFTOPPM", "pdftoppm");
     let prefix = work_directory.join(format!("page-{page_number:04}"));
     let page = page_number.to_string();
     let dpi = dpi.to_string();
@@ -538,7 +585,7 @@ fn render_page(
     ];
     run_tool(
         "pdftoppm",
-        &executable,
+        &tools.pdftoppm,
         &args,
         PDF_RENDER_TIMEOUT,
         work_directory,
@@ -552,6 +599,41 @@ fn render_page(
 
 fn tool_from_env(variable: &str, fallback: &str) -> OsString {
     std::env::var_os(variable).unwrap_or_else(|| OsString::from(fallback))
+}
+
+fn resolve_pdf_tools(runtimes: Option<&RuntimeRegistry>) -> Result<PdfTools, PdfWorkflowError> {
+    Ok(PdfTools {
+        pdfinfo: resolve_pdf_tool(
+            runtimes,
+            RuntimeToolKind::PdfInfo,
+            "LLAMASK_PDFINFO",
+            "pdfinfo",
+        )?,
+        pdftoppm: resolve_pdf_tool(
+            runtimes,
+            RuntimeToolKind::PdfToPpm,
+            "LLAMASK_PDFTOPPM",
+            "pdftoppm",
+        )?,
+    })
+}
+
+fn resolve_pdf_tool(
+    runtimes: Option<&RuntimeRegistry>,
+    kind: RuntimeToolKind,
+    variable: &str,
+    fallback: &str,
+) -> Result<OsString, PdfWorkflowError> {
+    if let Some(runtimes) = runtimes {
+        match runtimes.verified_tool(kind) {
+            Ok(Some(executable)) => return Ok(executable.as_os_str().to_owned()),
+            Ok(None) => {}
+            Err(_) => {
+                return Err(PdfWorkflowError::ToolIntegrityFailed(kind.id().to_owned()));
+            }
+        }
+    }
+    Ok(tool_from_env(variable, fallback))
 }
 
 fn run_tool(
@@ -997,8 +1079,15 @@ fn deduplicate_diagnostics(diagnostics: &mut Vec<TaskDiagnostic>) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use tempfile::tempdir;
+
+    use crate::sidecar::{RuntimeRegistry, RuntimeTool, RuntimeToolKind};
+    use crate::text::sha256_hex;
+
     use super::{
-        build_pdf_objects, bytes_without_streams, parse_pdfinfo, safe_image_only_structure,
+        PdfWorkflowError, build_pdf_objects, bytes_without_streams, parse_pdfinfo,
+        resolve_pdf_tool, safe_image_only_structure,
     };
 
     #[test]
@@ -1028,5 +1117,44 @@ mod tests {
         assert!(!safe_image_only_structure(active));
         let indirect = b"%PDF-1.4\n1 0 obj << /Length 2 0 R >> stream\nabc\nendstream\nendobj";
         assert!(bytes_without_streams(indirect).is_none());
+    }
+
+    #[test]
+    fn registered_pdf_tools_are_pinned_and_never_fall_back_after_tampering() {
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("pdfinfo.fixture");
+        fs::write(&executable, b"registered pdfinfo").unwrap();
+        let registry = RuntimeRegistry {
+            schema_version: 1,
+            detectors: Vec::new(),
+            tools: vec![RuntimeTool {
+                kind: RuntimeToolKind::PdfInfo,
+                executable: executable.clone(),
+                sha256: sha256_hex(b"registered pdfinfo"),
+                assets: Vec::new(),
+            }],
+        };
+
+        assert_eq!(
+            resolve_pdf_tool(
+                Some(&registry),
+                RuntimeToolKind::PdfInfo,
+                "UNUSED_PDFINFO_ENV",
+                "unused-pdfinfo",
+            )
+            .unwrap(),
+            executable.into_os_string()
+        );
+
+        fs::write(&registry.tools[0].executable, b"tampered").unwrap();
+        assert!(matches!(
+            resolve_pdf_tool(
+                Some(&registry),
+                RuntimeToolKind::PdfInfo,
+                "UNUSED_PDFINFO_ENV",
+                "unused-pdfinfo",
+            ),
+            Err(PdfWorkflowError::ToolIntegrityFailed(_))
+        ));
     }
 }

@@ -823,12 +823,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::Runtimes { command } => match command {
             RuntimeCommand::Validate { file } => {
                 let registry = RuntimeRegistry::from_path(&file)?;
-                println!("模型运行注册表有效：{} 个检测器", registry.detectors.len());
+                println!(
+                    "模型运行注册表有效：{} 个检测器，{} 个本地工具",
+                    registry.detectors.len(),
+                    registry.tools.len()
+                );
             }
             RuntimeCommand::Verify { file } => {
                 let registry = RuntimeRegistry::from_path(&file)?;
                 registry.verify_installation()?;
-                println!("模型运行环境完整：{} 个检测器", registry.detectors.len());
+                println!(
+                    "模型运行环境完整：{} 个检测器，{} 个本地工具",
+                    registry.detectors.len(),
+                    registry.tools.len()
+                );
             }
         },
     }

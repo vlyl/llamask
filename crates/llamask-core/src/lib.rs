@@ -27,7 +27,8 @@ pub use model::{
 };
 pub use pdf_workflow::{
     PdfScanProgress, PdfWorkflowError, export_pdf_task_with_runtimes, render_pdf_task_page_preview,
-    scan_pdf_with_policy, scan_pdf_with_policy_and_progress, verify_pdf_file_with_runtimes,
+    render_pdf_task_page_preview_with_runtimes, scan_pdf_with_policy,
+    scan_pdf_with_policy_and_progress, verify_pdf_file_with_runtimes,
 };
 pub use policy::{PolicyConfig, PolicyError};
 pub use pptx_workflow::{
@@ -35,7 +36,7 @@ pub use pptx_workflow::{
     review_pptx_finding, scan_pptx_with_policy, scan_pptx_with_policy_and_images,
     verify_pptx_file_with_runtimes,
 };
-pub use sidecar::{RuntimeRegistry, SidecarError};
+pub use sidecar::{RuntimeRegistry, RuntimeTool, RuntimeToolKind, SidecarError};
 pub use workflow::{
     WorkflowError, export_task, export_task_with_runtimes, render_task_with_runtimes,
     review_text_finding, scan_path, scan_path_with_policy, scan_text_with_policy, verify_file,

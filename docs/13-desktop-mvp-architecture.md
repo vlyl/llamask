@@ -1,6 +1,6 @@
-# 桌面端 MVP 架构与批量导出里程碑
+# 桌面端 MVP 架构与离线运行包里程碑
 
-文档状态：V0.9，批量目录导出与逐文件失败隔离实现基线（2026-08-03）
+文档状态：V1.0，哈希固定的 OCR/PDF 工具资源契约实现基线（2026-08-03）
 
 ## 1. 阶段目标
 
@@ -101,11 +101,18 @@ Rust 打开系统多文件选择器，用户确认后直接接收路径。前端
 
 ### `desktop_runtime_status()`
 
-在 Rust 端验证默认策略、本地运行注册表、OCR 可执行文件和权重 SHA-256，
-并检查 `pdfinfo`/`pdftoppm`。开发构建可使用仓库内 OCR 配置；安装构建只从
-应用资源目录读取 `runtimes/default.json`，也可由明确的
+在 Rust 端验证默认策略、本地运行注册表、OCR 可执行文件、权重以及注册的
+`pdfinfo`/`pdftoppm` SHA-256，并实际执行工具版本探测。开发构建可使用仓库内
+OCR 配置和系统 PATH；安装构建只从应用资源目录读取
+`runtimes/default.json`，也可由明确的
 `LLAMASK_RUNTIME_REGISTRY` 覆盖。前端只取得就绪状态和稳定状态码，不取得
 模型或工具路径。
+
+OCR 与 PDF 工具分别报告就绪状态：PDF 工具不完整不会使文字、图片和 Office
+规则/OCR 能力整体失效，但 PDF 任务会安全阻断。注册表只要声明任一 PDF
+工具，桌面端就要求两个工具成对存在；执行前 Core 再次验证工具与依赖哈希，
+失败时不会回退到系统 PATH。平台资源生成、Tauri 映射和发布门禁见
+`docs/14-offline-runtime-packaging.md`。
 
 ### `start_registered_scans()` / `cancel_scan(id)`
 
@@ -294,6 +301,14 @@ ready_to_export ── exporting ── verifying ── complete
 - 每个文件独立调用 Core 导出与残留复扫；失败后继续处理剩余任务。
 - 完成事件仅返回聚合数量和验证级别，不包含文件名、路径或敏感原文。
 
+当前离线运行包契约里程碑：
+
+- 注册表向后兼容地增加 `tools`，固定 `pdfinfo`、`pdftoppm` 及依赖哈希。
+- PDF 扫描、预览、导出和残留复扫共享同一注册工具解析路径。
+- 资源生成器拒绝绝对路径、目录穿越、符号链接和隐式覆盖。
+- macOS Apple Silicon 与 Windows x64 示例配方使用同一逻辑资源布局。
+- Tauri 离线构建配置将生成目录映射为 `$RESOURCE/runtimes/`，WebView 不可读。
+
 下一里程碑：
 
-- 捆绑并验证双平台 OCR/PDF 工具与模型运行包。
+- 冻结并生成真实双平台 OCR/PDF 载荷，完成许可证、签名和真实文件回归。

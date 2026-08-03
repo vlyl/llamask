@@ -54,7 +54,8 @@ The design documents are currently written in Chinese:
 - [XLSX vertical slice and safety boundaries](docs/10-xlsx-vertical-slice.md)
 - [PPTX vertical slice and safety boundaries](docs/11-pptx-vertical-slice.md)
 - [PDF vertical slice and safety boundaries](docs/12-pdf-vertical-slice.md)
-- [Desktop MVP architecture and first milestone](docs/13-desktop-mvp-architecture.md)
+- [Desktop MVP architecture and milestones](docs/13-desktop-mvp-architecture.md)
+- [Offline desktop runtime packaging contract](docs/14-offline-runtime-packaging.md)
 
 ## Target scope for the first release
 
@@ -366,7 +367,11 @@ review. PPTX export reuses the Core package rewrite and independent residual
 checks. Batch export now selects one native output directory, processes every
 auto-confirmed or reviewed file sequentially, avoids name collisions, isolates
 per-file failures, and emits only aggregate completion counts. Unreviewed files
-are skipped. The next increment bundles and validates the cross-platform OCR,
-PDF-tool, and model runtime packages.
+are skipped. The offline runtime packaging contract now pins OCR executables,
+models, `pdfinfo`, `pdftoppm`, and dependent files by SHA-256, prepares a
+path-safe Tauri resource directory from platform recipes, and prevents declared
+tools from falling back after integrity failure. Signed Apple Silicon and
+Windows x64 payloads, license manifests, and real-machine regression remain the
+next release gate.
 See the desktop architecture document for development details and safety
 boundaries.

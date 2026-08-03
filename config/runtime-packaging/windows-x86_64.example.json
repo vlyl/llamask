@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "detectors": [
+    {
+      "id": "pp_ocr_small",
+      "kind": "ocr",
+      "executable": "ocr/python/python.exe",
+      "working_directory": "ocr",
+      "args": [
+        "sidecar/main.py",
+        "--tier",
+        "small",
+        "--detector-model",
+        "models/det",
+        "--recognizer-model",
+        "models/rec"
+      ],
+      "assets": [
+        "ocr/python",
+        "ocr/sidecar",
+        "ocr/models"
+      ],
+      "timeout_ms": 120000
+    }
+  ],
+  "tools": [
+    {
+      "kind": "pdfinfo",
+      "executable": "pdf/bin/pdfinfo.exe",
+      "assets": [
+        "pdf/bin"
+      ]
+    },
+    {
+      "kind": "pdftoppm",
+      "executable": "pdf/bin/pdftoppm.exe",
+      "assets": [
+        "pdf/bin"
+      ]
+    }
+  ]
+}

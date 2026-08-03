@@ -39,7 +39,8 @@ Office 文档的可见/隐藏文字域、备注、批注、母版及嵌入图片
 - [XLSX 纵向切片与安全边界](docs/10-xlsx-vertical-slice.md)
 - [PPTX 纵向切片与安全边界](docs/11-pptx-vertical-slice.md)
 - [PDF 纵向切片与安全边界](docs/12-pdf-vertical-slice.md)
-- [桌面端 MVP 架构与首个里程碑](docs/13-desktop-mvp-architecture.md)
+- [桌面端 MVP 架构与里程碑](docs/13-desktop-mvp-architecture.md)
+- [桌面离线运行包契约](docs/14-offline-runtime-packaging.md)
 
 ## 当前确定的首发范围
 
@@ -282,6 +283,8 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 图表、外部数据、嵌入对象、主动内容和不支持媒体在复核前安全阻断，导出复用
 Core 的演示文稿最小修改与独立残留复扫。批量导出现在只需选择一次原生输出
 目录，按顺序处理已自动确认或人工复核的文件，自动避让重名并隔离单文件失败；
-待复核文件会跳过，完成摘要只包含聚合计数。下一增量捆绑并验证双平台 OCR、
-PDF 工具和模型运行包。
+待复核文件会跳过，完成摘要只包含聚合计数。离线运行包契约现在会对 OCR
+可执行文件、模型、`pdfinfo`、`pdftoppm` 和依赖逐文件固定 SHA-256，并由
+平台配方安全生成 Tauri 资源目录；已声明工具校验失败时不会回退。下一发布
+门槛是真实 Apple Silicon/Windows x64 载荷、许可证清单、签名和真机回归。
 开发和安全边界见桌面端架构文档。
