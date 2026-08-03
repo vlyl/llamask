@@ -474,6 +474,12 @@ button:focus-visible {
   font-size: 10px;
 }
 
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .text-button {
   padding: 6px 8px;
   color: #65756e;

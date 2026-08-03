@@ -363,6 +363,10 @@ bounded context for slides, notes, comments, masters, layouts, and diagrams.
 Embedded images share the same hash-validated mask workflow; unsupported charts,
 external data, embedded objects, active content, and media fail closed before
 review. PPTX export reuses the Core package rewrite and independent residual
-checks. The next increment adds batch output and per-file failure isolation.
+checks. Batch export now selects one native output directory, processes every
+auto-confirmed or reviewed file sequentially, avoids name collisions, isolates
+per-file failures, and emits only aggregate completion counts. Unreviewed files
+are skipped. The next increment bundles and validates the cross-platform OCR,
+PDF-tool, and model runtime packages.
 See the desktop architecture document for development details and safety
 boundaries.

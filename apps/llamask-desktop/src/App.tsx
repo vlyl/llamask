@@ -18,6 +18,8 @@ import {
 import { ReviewWorkspace } from "./ReviewWorkspace";
 import { TextReviewWorkspace } from "./TextReviewWorkspace";
 import type {
+  DesktopBatchExportStart,
+  DesktopBatchExportSummary,
   DesktopCapabilities,
   DesktopCommandError,
   DesktopFileKind,
@@ -153,6 +155,8 @@ const scanErrorLabels: Record<string, string> = {
   OUTPUT_EXISTS: "目标文件已经存在，请选择其他名称",
   OUTPUT_CONFLICT: "输出路径不能覆盖源文件",
   OUTPUT_TYPE_INVALID: "输出文件扩展名与源文件不匹配",
+  OUTPUT_NAME_INVALID: "无法生成安全副本文件名",
+  OUTPUT_NAME_UNAVAILABLE: "输出目录中没有可用的副本文件名",
   REVIEW_REQUIRED: "仍有结果尚未复核",
   VERIFICATION_FAILED: "残留复扫未通过，未保存副本",
   SOURCE_CHANGED: "源文件在扫描后发生变化，请重新扫描",
@@ -240,6 +244,7 @@ function App() {
   const [reviewPage, setReviewPage] = useState<DesktopReviewPage | null>(null);
   const [textReview, setTextReview] = useState<DesktopTextReview | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [batchExportStarting, setBatchExportStarting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const tauriRuntime = isTauriRuntime();
@@ -330,6 +335,25 @@ function App() {
         else dispose();
       })
       .catch(() => setNotice("扫描状态监听未启用，请重新启动应用。"));
+    listen<DesktopBatchExportSummary>("desktop-batch-export-complete", (event) => {
+      const result = event.payload;
+      const verification =
+        result.basicVerifications > 0
+          ? `；${result.completeVerifications} 个完整复检，${result.basicVerifications} 个基础复检`
+          : result.succeeded > 0
+            ? "；全部通过完整残留复检"
+            : "";
+      const skipped = result.skipped > 0 ? `；跳过 ${result.skipped} 个未就绪项目` : "";
+      setNotice(
+        `批量导出完成：成功 ${result.succeeded} 个，失败 ${result.failed} 个${verification}${skipped}。`,
+      );
+      setBatchExportStarting(false);
+    })
+      .then((dispose) => {
+        if (active) unlisten.push(dispose);
+        else dispose();
+      })
+      .catch(() => setNotice("批量导出摘要监听未启用，请重新启动应用。"));
     getCurrentWindow()
       .onDragDropEvent((event) => {
         if (event.payload.type === "over") setDragging(true);
@@ -611,6 +635,30 @@ function App() {
     }
   };
 
+  const exportBatch = async () => {
+    if (!tauriRuntime) {
+      setNotice("浏览器预览不会选择输出目录或写入本地副本；请在 Tauri 窗口中运行。");
+      return;
+    }
+    setBatchExportStarting(true);
+    setNotice(null);
+    try {
+      const result = await invoke<DesktopBatchExportStart>("choose_and_export_batch");
+      if (!result.started) {
+        setBatchExportStarting(false);
+        return;
+      }
+      setNotice((current) =>
+        current?.startsWith("批量导出完成：")
+          ? current
+          : `正在顺序导出 ${result.attempted} 个安全副本并逐个复扫${result.skipped > 0 ? `；${result.skipped} 个未就绪项目已跳过` : ""}…`,
+      );
+    } catch (error) {
+      setBatchExportStarting(false);
+      setNotice(normalizeError(error).message);
+    }
+  };
+
   const summary = useMemo(() => {
     const ready = files.filter((file) => file.ready).length;
     const blocked = files.length - ready;
@@ -630,7 +678,15 @@ function App() {
       ),
     ).length;
     const bytes = files.reduce((total, file) => total + file.sizeBytes, 0);
-    return { ready, blocked, scannable, active, exporting, completed, bytes };
+    const batchExportable = files.filter((file) => {
+      const scan = scans.get(file.id);
+      return (
+        file.sourceKind === "file" &&
+        scan !== undefined &&
+        ["ready_to_export", "export_failed", "complete"].includes(scan.status)
+      );
+    }).length;
+    return { ready, blocked, scannable, active, exporting, completed, batchExportable, bytes };
   }, [files, scans]);
   const reviewFile = reviewPage
     ? files.find((file) => file.id === reviewPage.id) ?? null
@@ -812,17 +868,32 @@ function App() {
               <div>
                 <h2>任务内容</h2>
                 <span>
-                  {summary.scannable} 个可立即扫描 · {summary.active} 个处理中 · {summary.blocked} 个导入受阻
+                  {summary.scannable} 个可立即扫描 · {summary.active} 个处理中 · {summary.batchExportable} 个可批量导出 · {summary.blocked} 个导入受阻
                 </span>
               </div>
-              <button
-                className="text-button danger"
-                type="button"
-                onClick={() => void clearFiles()}
-                disabled={summary.exporting > 0}
-              >
-                <TrashIcon /> 清空
-              </button>
+              <div className="panel-header-actions">
+                <button
+                  className="secondary-button compact-action"
+                  type="button"
+                  onClick={() => void exportBatch()}
+                  disabled={
+                    batchExportStarting ||
+                    summary.active > 0 ||
+                    summary.exporting > 0 ||
+                    summary.batchExportable === 0
+                  }
+                >
+                  {batchExportStarting ? "正在启动…" : `批量导出 ${summary.batchExportable}`}
+                </button>
+                <button
+                  className="text-button danger"
+                  type="button"
+                  onClick={() => void clearFiles()}
+                  disabled={summary.exporting > 0 || batchExportStarting}
+                >
+                  <TrashIcon /> 清空
+                </button>
+              </div>
             </div>
 
             <div className="file-list">

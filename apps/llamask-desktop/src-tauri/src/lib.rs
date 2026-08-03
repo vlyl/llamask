@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -39,6 +39,7 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 ];
 const FILES_IMPORTED_EVENT: &str = "desktop-files-imported";
 const SCAN_PROGRESS_EVENT: &str = "desktop-scan-progress";
+const BATCH_EXPORT_COMPLETE_EVENT: &str = "desktop-batch-export-complete";
 const RUNTIME_REGISTRY_ENV: &str = "LLAMASK_RUNTIME_REGISTRY";
 const TEXT_REVIEW_CONTEXT_CHARS: usize = 80;
 
@@ -268,11 +269,37 @@ struct DesktopTextReviewMutation {
     findings: Vec<DesktopTextReviewFinding>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DesktopBatchExportStart {
+    started: bool,
+    attempted: usize,
+    skipped: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DesktopBatchExportSummary {
+    attempted: usize,
+    succeeded: usize,
+    failed: usize,
+    skipped: usize,
+    complete_verifications: usize,
+    basic_verifications: usize,
+}
+
 struct ScanCandidate {
     id: String,
     source: RegisteredSource,
     kind: DesktopFileKind,
     cancel_requested: Arc<AtomicBool>,
+}
+
+struct BatchExportCandidate {
+    id: String,
+    task: StoredScanTask,
+    output: PathBuf,
+    output_name: String,
 }
 
 #[derive(Clone)]
@@ -538,7 +565,7 @@ fn desktop_capabilities() -> DesktopCapabilities {
         scan_extensions: vec![
             "txt", "md", "docx", "xlsx", "pptx", "pdf", "png", "jpg", "jpeg",
         ],
-        milestone: "pptx-xlsx-docx-clipboard-text-image-pdf-review-export",
+        milestone: "batch-pptx-xlsx-docx-clipboard-text-image-pdf-review-export",
     }
 }
 
@@ -1206,47 +1233,8 @@ fn choose_and_export_scan(
             .and_then(|name| name.to_str())
             .unwrap_or("redacted-output")
             .to_owned();
-        let result = tauri::async_runtime::spawn_blocking(move || match &task {
-            StoredScanTask::Text(task) => export_task_with_runtimes(
-                task,
-                &output,
-                context.as_deref().map(|context| &context.registry),
-            )
-            .map(|report| report.complete)
-            .map_err(|error| text_export_error_code(&error)),
-            StoredScanTask::Image(task) => {
-                let context = context.as_ref().ok_or("RUNTIME_REGISTRY_MISSING")?;
-                export_image_task_with_runtimes(task, &output, &context.registry)
-                    .map(|report| report.complete)
-                    .map_err(|error| image_export_error_code(&error))
-            }
-            StoredScanTask::Pdf(task) => {
-                let context = context.as_ref().ok_or("RUNTIME_REGISTRY_MISSING")?;
-                export_pdf_task_with_runtimes(task, &output, &context.registry)
-                    .map(|report| report.complete)
-                    .map_err(|error| pdf_export_error_code(&error))
-            }
-            StoredScanTask::Docx(task) => export_docx_task_with_runtimes(
-                task,
-                &output,
-                context.as_deref().map(|context| &context.registry),
-            )
-            .map(|report| report.complete)
-            .map_err(|error| docx_export_error_code(&error)),
-            StoredScanTask::Xlsx(task) => export_xlsx_task_with_runtimes(
-                task,
-                &output,
-                context.as_deref().map(|context| &context.registry),
-            )
-            .map(|report| report.complete)
-            .map_err(|error| xlsx_export_error_code(&error)),
-            StoredScanTask::Pptx(task) => export_pptx_task_with_runtimes(
-                task,
-                &output,
-                context.as_deref().map(|context| &context.registry),
-            )
-            .map(|report| report.complete)
-            .map_err(|error| pptx_export_error_code(&error)),
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            export_stored_task(&task, &output, context.as_deref(), None)
         })
         .await;
         match result {
@@ -1266,6 +1254,223 @@ fn choose_and_export_scan(
             .store(false, Ordering::Release);
     });
     Ok(true)
+}
+
+#[tauri::command]
+fn choose_and_export_batch(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<DesktopBatchExportStart, DesktopCommandError> {
+    let selected = app
+        .dialog()
+        .file()
+        .set_title("选择批量脱敏副本目录")
+        .blocking_pick_folder();
+    let Some(selected) = selected else {
+        return Ok(DesktopBatchExportStart {
+            started: false,
+            attempted: 0,
+            skipped: 0,
+        });
+    };
+    let directory = selected
+        .into_path()
+        .map_err(|_| DesktopCommandError::new("OUTPUT_PATH_INVALID", "输出目录无法安全使用。"))?;
+    if !directory.is_dir() {
+        return Err(DesktopCommandError::new(
+            "OUTPUT_PATH_INVALID",
+            "请选择已经存在的本地输出目录。",
+        ));
+    }
+    if state.worker_running.swap(true, Ordering::AcqRel) {
+        return Err(DesktopCommandError::new(
+            "LOCAL_WORK_ACTIVE",
+            "当前扫描或安全导出任务尚未结束。",
+        ));
+    }
+
+    let (context, runtime_failure_code) = match runtime_context(&app, state.inner()) {
+        Ok(context) => (Some(context), None),
+        Err(failure) => (None, Some(failure.code)),
+    };
+    let mut candidates = Vec::new();
+    let mut changed_ids = Vec::new();
+    let mut reserved = HashSet::new();
+    let mut skipped = 0usize;
+    let mut initial_failed = 0usize;
+    {
+        let files = state.files.lock().map_err(|_| {
+            state.worker_running.store(false, Ordering::Release);
+            task_state_error()
+        })?;
+        let mut scans = state.scans.lock().map_err(|_| {
+            state.worker_running.store(false, Ordering::Release);
+            task_state_error()
+        })?;
+        for (id, file) in files.iter() {
+            let Some(record) = scans.get_mut(id) else {
+                skipped += 1;
+                continue;
+            };
+            let RegisteredSource::File(source) = &file.source else {
+                skipped += 1;
+                continue;
+            };
+            if !batch_export_status_is_eligible(record.status) {
+                skipped += 1;
+                continue;
+            }
+            let Some(task) = record.task.clone() else {
+                skipped += 1;
+                continue;
+            };
+            match batch_output_path(&directory, source, &mut reserved) {
+                Ok((output, output_name)) => {
+                    record.begin_export();
+                    changed_ids.push(id.clone());
+                    candidates.push(BatchExportCandidate {
+                        id: id.clone(),
+                        task,
+                        output,
+                        output_name,
+                    });
+                }
+                Err(error) => {
+                    record.fail_export(error.code);
+                    changed_ids.push(id.clone());
+                    initial_failed += 1;
+                }
+            }
+        }
+    }
+
+    let attempted = candidates.len() + initial_failed;
+    if attempted == 0 {
+        state.worker_running.store(false, Ordering::Release);
+        return Err(DesktopCommandError::new(
+            "BATCH_EXPORT_EMPTY",
+            "没有已完成自动确认或人工复核的文件可以批量导出。",
+        ));
+    }
+    for id in &changed_ids {
+        emit_scan_summary(&app, id);
+    }
+
+    let batch_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut summary = DesktopBatchExportSummary {
+            attempted,
+            succeeded: 0,
+            failed: initial_failed,
+            skipped,
+            complete_verifications: 0,
+            basic_verifications: 0,
+        };
+        for candidate in candidates {
+            let worker_app = batch_app.clone();
+            let export_id = candidate.id.clone();
+            let output_name = candidate.output_name;
+            let task = candidate.task;
+            let output = candidate.output;
+            let export_context = context.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                export_stored_task(
+                    &task,
+                    &output,
+                    export_context.as_deref(),
+                    runtime_failure_code,
+                )
+            })
+            .await;
+            match result {
+                Ok(Ok(verification_complete)) => {
+                    summary.succeeded += 1;
+                    if verification_complete {
+                        summary.complete_verifications += 1;
+                    } else {
+                        summary.basic_verifications += 1;
+                    }
+                    update_scan(&worker_app, &export_id, |record| {
+                        record.finish_export(output_name, verification_complete)
+                    });
+                }
+                Ok(Err(code)) => {
+                    summary.failed += 1;
+                    update_scan(&worker_app, &export_id, |record| record.fail_export(code));
+                }
+                Err(_) => {
+                    summary.failed += 1;
+                    update_scan(&worker_app, &export_id, |record| {
+                        record.fail_export("EXPORT_WORKER_FAILED")
+                    });
+                }
+            }
+        }
+        let _ = batch_app.emit(BATCH_EXPORT_COMPLETE_EVENT, summary);
+        batch_app
+            .state::<DesktopState>()
+            .worker_running
+            .store(false, Ordering::Release);
+    });
+
+    Ok(DesktopBatchExportStart {
+        started: true,
+        attempted,
+        skipped,
+    })
+}
+
+fn batch_export_status_is_eligible(status: DesktopScanStatus) -> bool {
+    matches!(
+        status,
+        DesktopScanStatus::ReadyToExport
+            | DesktopScanStatus::ExportFailed
+            | DesktopScanStatus::Complete
+    )
+}
+
+fn export_stored_task(
+    task: &StoredScanTask,
+    output: &Path,
+    context: Option<&RuntimeContext>,
+    runtime_failure_code: Option<&'static str>,
+) -> Result<bool, &'static str> {
+    match task {
+        StoredScanTask::Text(task) => {
+            export_task_with_runtimes(task, output, context.map(|context| &context.registry))
+                .map(|report| report.complete)
+                .map_err(|error| text_export_error_code(&error))
+        }
+        StoredScanTask::Image(task) => {
+            let context =
+                context.ok_or(runtime_failure_code.unwrap_or("RUNTIME_REGISTRY_MISSING"))?;
+            export_image_task_with_runtimes(task, output, &context.registry)
+                .map(|report| report.complete)
+                .map_err(|error| image_export_error_code(&error))
+        }
+        StoredScanTask::Pdf(task) => {
+            let context =
+                context.ok_or(runtime_failure_code.unwrap_or("RUNTIME_REGISTRY_MISSING"))?;
+            export_pdf_task_with_runtimes(task, output, &context.registry)
+                .map(|report| report.complete)
+                .map_err(|error| pdf_export_error_code(&error))
+        }
+        StoredScanTask::Docx(task) => {
+            export_docx_task_with_runtimes(task, output, context.map(|context| &context.registry))
+                .map(|report| report.complete)
+                .map_err(|error| docx_export_error_code(&error))
+        }
+        StoredScanTask::Xlsx(task) => {
+            export_xlsx_task_with_runtimes(task, output, context.map(|context| &context.registry))
+                .map(|report| report.complete)
+                .map_err(|error| xlsx_export_error_code(&error))
+        }
+        StoredScanTask::Pptx(task) => {
+            export_pptx_task_with_runtimes(task, output, context.map(|context| &context.registry))
+                .map(|report| report.complete)
+                .map_err(|error| pptx_export_error_code(&error))
+        }
+    }
 }
 
 #[tauri::command]
@@ -1766,6 +1971,42 @@ fn export_name_and_extension(source: &Path) -> Result<(String, String), DesktopC
         ));
     }
     Ok((format!("{stem}_redacted.{extension}"), extension))
+}
+
+fn batch_output_path(
+    directory: &Path,
+    source: &Path,
+    reserved: &mut HashSet<PathBuf>,
+) -> Result<(PathBuf, String), DesktopCommandError> {
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            DesktopCommandError::new("OUTPUT_NAME_INVALID", "无法生成安全的副本文件名。")
+        })?;
+    let extension = normalized_extension(source);
+    if extension.is_empty() {
+        return Err(DesktopCommandError::new(
+            "OUTPUT_NAME_INVALID",
+            "无法生成安全的副本文件名。",
+        ));
+    }
+    for ordinal in 1..=10_000usize {
+        let name = if ordinal == 1 {
+            format!("{stem}_redacted.{extension}")
+        } else {
+            format!("{stem}_redacted_{ordinal}.{extension}")
+        };
+        let output = directory.join(&name);
+        if !output.exists() && reserved.insert(output.clone()) {
+            return Ok((output, name));
+        }
+    }
+    Err(DesktopCommandError::new(
+        "OUTPUT_NAME_UNAVAILABLE",
+        "输出目录中没有可用的安全副本文件名。",
+    ))
 }
 
 fn task_state_error() -> DesktopCommandError {
@@ -2914,6 +3155,7 @@ pub fn run() {
             review_text_scan,
             set_text_review_finding,
             choose_and_export_scan,
+            choose_and_export_batch,
             copy_redacted_clipboard
         ])
         .run(tauri::generate_context!())
@@ -2922,6 +3164,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -2936,11 +3179,13 @@ mod tests {
     };
 
     use super::{
-        DesktopFileKind, DesktopOutputKind, DesktopScanStage, DesktopScanStatus, DesktopSourceKind,
-        DesktopState, MAX_TEXT_BYTES, ScanRecord, docx_task_metrics, docx_text_review_findings,
-        export_name_and_extension, inspect_file, pptx_task_metrics, pptx_text_review_findings,
-        register_clipboard_text, register_files, review_findings, text_review_findings,
-        xlsx_review_presentation, xlsx_task_metrics, xlsx_text_review_findings,
+        DesktopBatchExportSummary, DesktopFileKind, DesktopOutputKind, DesktopScanStage,
+        DesktopScanStatus, DesktopSourceKind, DesktopState, MAX_TEXT_BYTES, ScanRecord,
+        batch_export_status_is_eligible, batch_output_path, docx_task_metrics,
+        docx_text_review_findings, export_name_and_extension, inspect_file, pptx_task_metrics,
+        pptx_text_review_findings, register_clipboard_text, register_files, review_findings,
+        text_review_findings, xlsx_review_presentation, xlsx_task_metrics,
+        xlsx_text_review_findings,
     };
 
     fn docx_fixture_path() -> PathBuf {
@@ -3313,5 +3558,70 @@ mod tests {
         let (name, extension) = export_name_and_extension(Path::new("report.final.pdf")).unwrap();
         assert_eq!(name, "report.final_redacted.pdf");
         assert_eq!(extension, "pdf");
+    }
+
+    #[test]
+    fn batch_output_names_never_overwrite_or_collide() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("report_redacted.pdf"), b"existing").unwrap();
+        let mut reserved = HashSet::new();
+
+        let (first_path, first_name) = batch_output_path(
+            directory.path(),
+            Path::new("/source-a/report.pdf"),
+            &mut reserved,
+        )
+        .unwrap();
+        let (second_path, second_name) = batch_output_path(
+            directory.path(),
+            Path::new("/source-b/report.pdf"),
+            &mut reserved,
+        )
+        .unwrap();
+
+        assert_eq!(first_name, "report_redacted_2.pdf");
+        assert_eq!(second_name, "report_redacted_3.pdf");
+        assert_ne!(first_path, second_path);
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+    }
+
+    #[test]
+    fn batch_export_never_silently_accepts_unreviewed_tasks() {
+        assert!(batch_export_status_is_eligible(
+            DesktopScanStatus::ReadyToExport
+        ));
+        assert!(batch_export_status_is_eligible(
+            DesktopScanStatus::ExportFailed
+        ));
+        assert!(batch_export_status_is_eligible(DesktopScanStatus::Complete));
+        assert!(!batch_export_status_is_eligible(
+            DesktopScanStatus::ReviewRequired
+        ));
+        assert!(!batch_export_status_is_eligible(DesktopScanStatus::Blocked));
+        assert!(!batch_export_status_is_eligible(
+            DesktopScanStatus::Cancelled
+        ));
+    }
+
+    #[test]
+    fn batch_export_summary_contains_only_aggregate_counts() {
+        let summary = DesktopBatchExportSummary {
+            attempted: 4,
+            succeeded: 2,
+            failed: 2,
+            skipped: 1,
+            complete_verifications: 1,
+            basic_verifications: 1,
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"attempted":4,"succeeded":2,"failed":2,"skipped":1,"completeVerifications":1,"basicVerifications":1}"#
+        );
+        assert!(!json.contains("path"));
+        assert!(!json.contains("name"));
+        assert!(!json.contains("finding"));
     }
 }

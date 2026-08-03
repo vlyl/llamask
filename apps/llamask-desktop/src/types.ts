@@ -152,3 +152,18 @@ export interface DesktopTextReviewMutation {
   summary: DesktopScanSummary;
   findings: DesktopTextReviewFinding[];
 }
+
+export interface DesktopBatchExportStart {
+  started: boolean;
+  attempted: number;
+  skipped: number;
+}
+
+export interface DesktopBatchExportSummary {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  completeVerifications: number;
+  basicVerifications: number;
+}
