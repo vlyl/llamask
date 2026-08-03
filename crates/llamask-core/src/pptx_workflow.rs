@@ -14,18 +14,18 @@ use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use crate::image_workflow::{
-    ImageWorkflowError, export_image_task_with_runtimes, scan_image_with_policy,
-    verify_image_file_with_runtimes,
+    ImageWorkflowError, export_image_task_with_runtimes, render_image_task_preview,
+    scan_image_with_policy, verify_image_file_with_runtimes,
 };
 use crate::model::{
-    DiagnosticSeverity, DocumentPart, EntityType, FileKind, Finding, ImageTaskDraft,
+    DiagnosticSeverity, DocumentPart, EntityType, FileKind, Finding, ImagePreview, ImageTaskDraft,
     PptxDocumentGraph, PptxEmbeddedImageTask, PptxImageResidualFinding, PptxResidualFinding,
     PptxSourceMetadata, PptxTaskDraft, PptxVerificationReport, TaskDiagnostic,
 };
 use crate::policy::{PolicyConfig, PolicyError};
 use crate::sidecar::RuntimeRegistry;
 use crate::text::sha256_hex;
-use crate::workflow::{WorkflowError, run_detection};
+use crate::workflow::{WorkflowError, review_finding, run_detection};
 
 const MAX_PPTX_BYTES: usize = 100 * 1024 * 1024;
 const MAX_PACKAGE_ENTRIES: usize = 10_000;
@@ -258,6 +258,54 @@ pub fn scan_pptx_with_policy_and_images(
         diagnostics,
         contains_sensitive_plaintext: true,
     })
+}
+
+pub fn review_pptx_finding(
+    task: &mut PptxTaskDraft,
+    finding_id: &str,
+    selected: bool,
+    replacement: Option<&str>,
+) -> Result<(), PptxWorkflowError> {
+    validate_pptx_task(task)?;
+    let mut updated = task.clone();
+    review_finding(&mut updated.findings, finding_id, selected, replacement)?;
+    validate_pptx_task(&updated)?;
+    *task = updated;
+    Ok(())
+}
+
+pub fn render_pptx_embedded_image_preview(
+    task: &PptxTaskDraft,
+    image_number: usize,
+) -> Result<ImagePreview, PptxWorkflowError> {
+    validate_pptx_task(task)?;
+    let embedded = image_number
+        .checked_sub(1)
+        .and_then(|index| task.embedded_images.get(index))
+        .ok_or_else(|| {
+            PptxWorkflowError::EmbeddedImageTaskMismatch(format!(
+                "内嵌图片编号无效：{image_number}"
+            ))
+        })?;
+    let source_path = fs::canonicalize(&task.document.source.path)?;
+    let source_bytes = fs::read(&source_path)?;
+    if sha256_hex(&source_bytes) != task.document.source.sha256 {
+        return Err(PptxWorkflowError::SourceChanged);
+    }
+    let summary = validate_package(&source_bytes)?;
+    embedded_tasks_by_entry(task, &summary)?;
+
+    let mut archive = ZipArchive::new(Cursor::new(source_bytes))?;
+    let mut entry = archive.by_name(&embedded.entry_name)?;
+    let mut image_bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut image_bytes)?;
+    let extension = embedded_image_extension(&embedded.entry_name)?;
+    let temporary = tempdir()?;
+    let image_path = temporary.path().join(format!("preview.{extension}"));
+    fs::write(&image_path, image_bytes)?;
+    let mut preview_task = embedded.task.clone();
+    preview_task.source.path = image_path.to_string_lossy().into_owned();
+    render_image_task_preview(&preview_task).map_err(PptxWorkflowError::EmbeddedImage)
 }
 
 fn validate_package(bytes: &[u8]) -> Result<PackageSummary, PptxWorkflowError> {
@@ -1792,16 +1840,21 @@ mod tests {
     use std::io::{Cursor, Read, Write};
     use std::path::PathBuf;
 
+    use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
     use zip::{ZipArchive, ZipWriter};
 
-    use crate::model::{EntityType, PptxTaskDraft};
+    use crate::model::{
+        EntityType, ImageFileKind, ImageSourceMetadata, ImageTaskDraft, PptxEmbeddedImageTask,
+        PptxTaskDraft,
+    };
     use crate::policy::PolicyConfig;
+    use crate::text::sha256_hex;
 
     use super::{
-        PptxWorkflowError, export_pptx_task_with_runtimes, scan_pptx_with_policy,
-        verify_pptx_file_with_runtimes,
+        PptxWorkflowError, export_pptx_task_with_runtimes, render_pptx_embedded_image_preview,
+        review_pptx_finding, scan_pptx_with_policy, verify_pptx_file_with_runtimes,
     };
 
     fn fixture_path() -> PathBuf {
@@ -1902,6 +1955,42 @@ mod tests {
     }
 
     #[test]
+    fn text_review_updates_only_the_requested_finding() {
+        let source = fixture_path();
+        let source_before = fs::read(&source).unwrap();
+        let mut task = scan_pptx_with_policy(&source, &policy_without_models(), None).unwrap();
+        let finding_id = task.findings[0].id.clone();
+        let untouched_id = task.findings[1].id.clone();
+        let untouched_before = task.findings[1].clone();
+
+        review_pptx_finding(&mut task, &finding_id, true, Some("[演示文稿内容]")).unwrap();
+
+        let reviewed = task
+            .findings
+            .iter()
+            .find(|finding| finding.id == finding_id)
+            .unwrap();
+        assert!(reviewed.reviewed);
+        assert!(reviewed.selected);
+        assert_eq!(reviewed.replacement, "[演示文稿内容]");
+        assert_eq!(
+            task.findings
+                .iter()
+                .find(|finding| finding.id == untouched_id)
+                .unwrap(),
+            &untouched_before
+        );
+        assert_eq!(fs::read(source).unwrap(), source_before);
+
+        assert!(matches!(
+            review_pptx_finding(&mut task, &finding_id, true, Some(&"x".repeat(257))),
+            Err(PptxWorkflowError::TextDetection(
+                crate::workflow::WorkflowError::ReplacementTooLong
+            ))
+        ));
+    }
+
+    #[test]
     fn export_redacts_structural_text_scrubs_links_and_authors_and_preserves_theme() {
         let mut task =
             scan_pptx_with_policy(&fixture_path(), &policy_without_models(), None).unwrap();
@@ -1956,6 +2045,51 @@ mod tests {
         assert!(matches!(
             error,
             PptxWorkflowError::EmbeddedImagesUnsupported
+        ));
+    }
+
+    #[test]
+    fn embedded_image_preview_revalidates_and_reencodes_the_source() {
+        let temporary = tempdir().unwrap();
+        let source = temporary.path().join("with-preview-image.pptx");
+        let mut image_bytes = Vec::new();
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, Rgba([12, 34, 56, 255])))
+            .write_to(&mut Cursor::new(&mut image_bytes), ImageFormat::Png)
+            .unwrap();
+        fs::write(
+            &source,
+            copy_fixture_with_extra_entry("ppt/media/image1.png", &image_bytes),
+        )
+        .unwrap();
+        let mut task = scan_pptx_with_policy(&source, &policy_without_models(), None).unwrap();
+        task.embedded_images.push(PptxEmbeddedImageTask {
+            entry_name: "ppt/media/image1.png".to_owned(),
+            task: ImageTaskDraft {
+                schema_version: 1,
+                task_id: "pptx-preview-test".to_owned(),
+                policy_id: task.policy_id.clone(),
+                policy: task.policy.clone(),
+                source: ImageSourceMetadata {
+                    path: "pptx://test#ppt/media/image1.png".to_owned(),
+                    sha256: sha256_hex(&image_bytes),
+                    size_bytes: image_bytes.len() as u64,
+                    file_kind: ImageFileKind::Png,
+                    width: 1,
+                    height: 1,
+                },
+                ocr_runtime_id: "pp_ocr_small".to_owned(),
+                findings: Vec::new(),
+                diagnostics: Vec::new(),
+                contains_sensitive_plaintext: true,
+            },
+        });
+
+        let preview = render_pptx_embedded_image_preview(&task, 1).unwrap();
+        assert_eq!((preview.width, preview.height), (1, 1));
+        assert!(preview.png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(matches!(
+            render_pptx_embedded_image_preview(&task, 2),
+            Err(PptxWorkflowError::EmbeddedImageTaskMismatch(_))
         ));
     }
 

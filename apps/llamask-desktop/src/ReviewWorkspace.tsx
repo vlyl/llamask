@@ -152,7 +152,8 @@ export function ReviewWorkspace({
   const groups = useMemo(() => groupState(findings), [findings]);
   const activeFinding = findings.find((finding) => finding.findingId === activeFindingId);
   const pendingGroups = groups.filter((group) => !group.reviewed).length;
-  const embeddedImage = file.kind === "word" || file.kind === "spreadsheet";
+  const embeddedImage =
+    file.kind === "word" || file.kind === "spreadsheet" || file.kind === "presentation";
 
   const sourcePoint = (clientX: number, clientY: number) => {
     const bounds = overlayRef.current?.getBoundingClientRect();
@@ -325,7 +326,7 @@ export function ReviewWorkspace({
             <div className={`page-preview ${addMode ? "drawing" : ""}`}>
               <img
                 src={page.imageDataUrl}
-                alt={embeddedImage ? "DOCX 内嵌图片复核" : "本地复核页面"}
+                alt={embeddedImage ? "Office 内嵌图片复核" : "本地复核页面"}
                 draggable={false}
               />
               <div

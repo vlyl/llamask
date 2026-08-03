@@ -264,7 +264,7 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 
 桌面端阶段已经开始：`apps/llamask-desktop` 提供 Tauri 2 + React/TypeScript
 最小窗口、受限文件选择权限、拖放导入、Rust 会话路径注册表、格式/大小预检
-和任务列表界面。TXT、Markdown、DOCX、XLSX、PDF、PNG 和 JPEG 已接入真实
+和任务列表界面。TXT、Markdown、DOCX、XLSX、PPTX、PDF、PNG 和 JPEG 已接入真实
 `llamask-core` 后台扫描；敏感扫描草稿只保存在 Rust 内存。图片/PDF 复核只
 按需取得受限尺寸的重编码页面预览和几何框；文本复核只取得命中内容及前后
 各 80 个 Unicode 字符，不返回源路径或整份文档。DOCX 文字结果只额外提供
@@ -277,5 +277,8 @@ ONNX 运行，不再依赖 PyTorch、Transformers 或 ModelScope；Qwen 的单�
 才能导出，导出复用 Core 的最小 OOXML 修改和残留验证。XLSX 复核只展示
 工作表序号、单元格坐标和内容类型；同一单元格的公式与缓存原子同步复核，
 工作表名称当前只能明确保留。内嵌图片复用哈希校验后的遮罩流程，导出继续
-使用 Core 的工作簿最小修改与残留复扫。下一增量接入 PPTX，随后补批量输出。
+使用 Core 的工作簿最小修改与残留复扫。PPTX 复核只展示幻灯片、备注、批注、
+母版、版式和关系图等安全内容域及序号；内嵌图片复用源哈希校验后的遮罩流程。
+图表、外部数据、嵌入对象、主动内容和不支持媒体在复核前安全阻断，导出复用
+Core 的演示文稿最小修改与独立残留复扫。下一增量补批量输出和逐文件失败隔离。
 开发和安全边界见桌面端架构文档。

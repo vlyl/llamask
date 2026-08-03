@@ -31,8 +31,9 @@ pub use pdf_workflow::{
 };
 pub use policy::{PolicyConfig, PolicyError};
 pub use pptx_workflow::{
-    PptxWorkflowError, export_pptx_task_with_runtimes, scan_pptx_with_policy,
-    scan_pptx_with_policy_and_images, verify_pptx_file_with_runtimes,
+    PptxWorkflowError, export_pptx_task_with_runtimes, render_pptx_embedded_image_preview,
+    review_pptx_finding, scan_pptx_with_policy, scan_pptx_with_policy_and_images,
+    verify_pptx_file_with_runtimes,
 };
 pub use sidecar::{RuntimeRegistry, SidecarError};
 pub use workflow::{
