@@ -41,6 +41,6 @@ pub use workflow::{
     verify_file_with_runtimes,
 };
 pub use xlsx_workflow::{
-    XlsxWorkflowError, export_xlsx_task_with_runtimes, scan_xlsx_with_policy,
-    verify_xlsx_file_with_runtimes,
+    XlsxWorkflowError, export_xlsx_task_with_runtimes, render_xlsx_embedded_image_preview,
+    review_xlsx_finding, scan_xlsx_with_policy, verify_xlsx_file_with_runtimes,
 };

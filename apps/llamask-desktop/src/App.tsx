@@ -48,7 +48,7 @@ const browserCapabilities: DesktopCapabilities = {
     "jpg",
     "jpeg",
   ],
-  scanExtensions: ["txt", "md", "docx", "pdf", "png", "jpg", "jpeg"],
+  scanExtensions: ["txt", "md", "docx", "xlsx", "pdf", "png", "jpg", "jpeg"],
   milestone: "browser-preview",
 };
 
@@ -128,6 +128,16 @@ const scanErrorLabels: Record<string, string> = {
   DOCX_EXTERNAL_RELATIONSHIP_UNSUPPORTED: "DOCX 包含无法安全保留的外部关系",
   DOCX_EXPORT_FAILED: "DOCX 安全导出未完成",
   DOCX_IMAGE_PREVIEW_FAILED: "DOCX 内嵌图片预览生成失败",
+  XLSX_LIMIT_EXCEEDED: "XLSX 超过安全处理限制",
+  ENCRYPTED_XLSX_UNSUPPORTED: "加密 XLSX 需要先生成可信解密副本",
+  INVALID_XLSX: "XLSX 结构无效或缺少必要内容",
+  XLSX_READ_FAILED: "XLSX 无法安全读取",
+  XLSX_SCAN_FAILED: "XLSX 扫描未完成",
+  XLSX_EMBEDDED_IMAGE_UNSUPPORTED: "XLSX 包含暂不支持的内嵌图片格式",
+  XLSX_UNSUPPORTED_PAYLOAD: "XLSX 包含无法安全验证的图表、缓存、外部数据或嵌入对象",
+  XLSX_SHEET_RENAME_UNSUPPORTED: "工作表名称当前不能安全自动改名，请选择保留原文",
+  XLSX_EXPORT_FAILED: "XLSX 安全导出未完成",
+  XLSX_IMAGE_PREVIEW_FAILED: "XLSX 内嵌图片预览生成失败",
   MODEL_RUNTIME_REQUIRED: "策略要求的本地语义模型不可用",
   OUTPUT_EXISTS: "目标文件已经存在，请选择其他名称",
   OUTPUT_CONFLICT: "输出路径不能覆盖源文件",
@@ -456,7 +466,7 @@ function App() {
 
   const openReview = async (id: string, pageNumber = 1) => {
     const file = files.find((candidate) => candidate.id === id);
-    if (file?.kind !== "text" && file?.kind !== "word") {
+    if (file?.kind !== "text" && file?.kind !== "word" && file?.kind !== "spreadsheet") {
       await openPageReview(id, pageNumber);
       return;
     }
@@ -617,7 +627,7 @@ function App() {
   const hasRuleScannableContent = files.some((file) => {
     const scan = scans.get(file.id);
     return (
-      (file.kind === "text" || file.kind === "word") &&
+      (file.kind === "text" || file.kind === "word" || file.kind === "spreadsheet") &&
       file.ready &&
       file.scanSupported &&
       (!scan || ["blocked", "cancelled"].includes(scan.status))
@@ -675,7 +685,7 @@ function App() {
                     ? `${summary.active} 个项目正在本机处理`
                     : summary.completed > 0
                       ? `${summary.completed} 个项目扫描完成`
-                      : "文本、DOCX、PDF 与图片已接入"}
+                      : "文本、DOCX、XLSX、PDF 与图片已接入"}
                 </small>
               </div>
             </li>
@@ -898,9 +908,9 @@ function App() {
               {!scanRuntimeReady
                 ? "请完成默认策略或本地 OCR 资源完整性检查"
                 : summary.scannable === 0
-                  ? "请导入剪贴板文本、TXT、Markdown、DOCX、PDF、PNG 或 JPEG"
+                  ? "请导入剪贴板文本、TXT、Markdown、DOCX、XLSX、PDF、PNG 或 JPEG"
                   : !runtimeStatus.ocrReady && hasRuleScannableContent
-                    ? "文本和 DOCX 文字将使用本地规则扫描；含图片的 DOCX 需要本地 OCR"
+                    ? "文本和 Office 文字将使用本地规则扫描；含图片的文档需要本地 OCR"
                     : "扫描任务和敏感结果只保存在 Rust 进程内"}
             </span>
             <button
@@ -930,7 +940,11 @@ function App() {
           canExport={reviewScan?.unreviewedGroups === 0}
           onClose={() => setReviewPage(null)}
           onPageChange={(pageNumber) =>
-            openPageReview(reviewPage.id, pageNumber, reviewFile.kind === "word")
+            openPageReview(
+              reviewPage.id,
+              pageNumber,
+              reviewFile.kind === "word" || reviewFile.kind === "spreadsheet",
+            )
           }
           onSetGroup={(groupId, selected) =>
             applyReviewMutation("set_review_group", { groupId, selected })
@@ -956,7 +970,8 @@ function App() {
           onClose={() => setTextReview(null)}
           onSetFinding={applyTextReviewMutation}
           onOpenEmbeddedImages={
-            textReviewFile.kind === "word" && textReview.embeddedImageCount > 0
+            (textReviewFile.kind === "word" || textReviewFile.kind === "spreadsheet") &&
+            textReview.embeddedImageCount > 0
               ? () => openPageReview(textReview.id, 1, true)
               : undefined
           }

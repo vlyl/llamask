@@ -13,13 +13,15 @@ use llamask_core::model::{DocumentPart, EntityType, Finding, ImageFinding};
 use llamask_core::sidecar::DetectorKind;
 use llamask_core::{
     DocxTaskDraft, DocxWorkflowError, ImageRect, ImageTaskDraft, ImageWorkflowError, PdfTaskDraft,
-    PdfWorkflowError, PolicyConfig, RuntimeRegistry, TaskDraft, WorkflowError,
-    add_manual_image_mask, export_docx_task_with_runtimes, export_image_task_with_runtimes,
-    export_pdf_task_with_runtimes, export_task_with_runtimes, remove_manual_image_group,
-    render_docx_embedded_image_preview, render_image_task_preview, render_pdf_task_page_preview,
-    render_task_with_runtimes, review_docx_finding, review_image_group, review_text_finding,
-    scan_docx_with_policy_and_images, scan_image_with_policy, scan_path_with_policy,
-    scan_pdf_with_policy_and_progress, scan_text_with_policy, update_image_mask,
+    PdfWorkflowError, PolicyConfig, RuntimeRegistry, TaskDraft, WorkflowError, XlsxTaskDraft,
+    XlsxWorkflowError, add_manual_image_mask, export_docx_task_with_runtimes,
+    export_image_task_with_runtimes, export_pdf_task_with_runtimes, export_task_with_runtimes,
+    export_xlsx_task_with_runtimes, remove_manual_image_group, render_docx_embedded_image_preview,
+    render_image_task_preview, render_pdf_task_page_preview, render_task_with_runtimes,
+    render_xlsx_embedded_image_preview, review_docx_finding, review_image_group,
+    review_text_finding, review_xlsx_finding, scan_docx_with_policy_and_images,
+    scan_image_with_policy, scan_path_with_policy, scan_pdf_with_policy_and_progress,
+    scan_text_with_policy, scan_xlsx_with_policy, update_image_mask,
 };
 use serde::Serialize;
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
@@ -237,6 +239,8 @@ struct DesktopTextReviewFinding {
     entity_type: String,
     confidence: f32,
     section_label: Option<String>,
+    can_apply: bool,
+    review_note: Option<String>,
     context_before: String,
     matched_text: String,
     context_after: String,
@@ -275,6 +279,7 @@ enum StoredScanTask {
     Image(Box<ImageTaskDraft>),
     Pdf(Box<PdfTaskDraft>),
     Docx(Box<DocxTaskDraft>),
+    Xlsx(Box<XlsxTaskDraft>),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -315,6 +320,7 @@ impl StoredScanTask {
             Self::Image(task) => image_task_metrics(task),
             Self::Pdf(task) => pdf_task_metrics(task),
             Self::Docx(task) => docx_task_metrics(task),
+            Self::Xlsx(task) => xlsx_task_metrics(task),
         }
     }
 
@@ -324,6 +330,7 @@ impl StoredScanTask {
             Self::Image(_) => 1,
             Self::Pdf(task) => task.pages.len(),
             Self::Docx(task) => task.embedded_images.len(),
+            Self::Xlsx(task) => task.embedded_images.len(),
         }
     }
 
@@ -337,6 +344,10 @@ impl StoredScanTask {
                 .find(|page| page.page_number == page_number)
                 .map(|page| &page.task),
             Self::Docx(task) => page_number
+                .checked_sub(1)
+                .and_then(|index| task.embedded_images.get(index))
+                .map(|embedded| &embedded.task),
+            Self::Xlsx(task) => page_number
                 .checked_sub(1)
                 .and_then(|index| task.embedded_images.get(index))
                 .map(|embedded| &embedded.task),
@@ -354,6 +365,10 @@ impl StoredScanTask {
                 .find(|page| page.page_number == page_number)
                 .map(|page| &mut page.task),
             Self::Docx(task) => page_number
+                .checked_sub(1)
+                .and_then(|index| task.embedded_images.get_mut(index))
+                .map(|embedded| &mut embedded.task),
+            Self::Xlsx(task) => page_number
                 .checked_sub(1)
                 .and_then(|index| task.embedded_images.get_mut(index))
                 .map(|embedded| &mut embedded.task),
@@ -507,8 +522,8 @@ fn desktop_capabilities() -> DesktopCapabilities {
         offline_only: true,
         max_import_files: MAX_IMPORT_FILES,
         supported_extensions: SUPPORTED_EXTENSIONS.to_vec(),
-        scan_extensions: vec!["txt", "md", "docx", "pdf", "png", "jpg", "jpeg"],
-        milestone: "docx-clipboard-text-image-pdf-review-export",
+        scan_extensions: vec!["txt", "md", "docx", "xlsx", "pdf", "png", "jpg", "jpeg"],
+        milestone: "xlsx-docx-clipboard-text-image-pdf-review-export",
     }
 }
 
@@ -802,7 +817,7 @@ fn start_registered_scans(
         state.worker_running.store(false, Ordering::Release);
         return Err(DesktopCommandError::new(
             "NO_SCANNABLE_FILES",
-            "请先导入剪贴板文本、TXT、Markdown、DOCX、PDF、PNG 或 JPEG。",
+            "请先导入剪贴板文本、TXT、Markdown、DOCX、XLSX、PDF、PNG 或 JPEG。",
         ));
     }
 
@@ -892,6 +907,8 @@ async fn review_scan_page(
         }
         StoredScanTask::Docx(task) => render_docx_embedded_image_preview(task, page_number)
             .map_err(|_| "DOCX_IMAGE_PREVIEW_FAILED"),
+        StoredScanTask::Xlsx(task) => render_xlsx_embedded_image_preview(task, page_number)
+            .map_err(|_| "XLSX_IMAGE_PREVIEW_FAILED"),
         _ => Err("REVIEW_PAGE_INVALID"),
     })
     .await
@@ -992,6 +1009,13 @@ fn review_text_scan(
                 unreviewed_image_groups: docx_unreviewed_image_groups(task),
                 findings: docx_text_review_findings(task)?,
             },
+            Some(StoredScanTask::Xlsx(task)) => DesktopTextReview {
+                id,
+                total_characters: task.document.parts.iter().map(|part| part.char_len).sum(),
+                embedded_image_count: task.embedded_images.len(),
+                unreviewed_image_groups: xlsx_unreviewed_image_groups(task),
+                findings: xlsx_text_review_findings(task)?,
+            },
             _ => {
                 return Err(DesktopCommandError::new(
                     "TEXT_REVIEW_UNAVAILABLE",
@@ -1026,6 +1050,11 @@ fn set_text_review_finding(
                 review_docx_finding(task, &finding_id, selected, replacement.as_deref())
                     .map_err(docx_review_error)?;
                 docx_text_review_findings(task)?
+            }
+            Some(StoredScanTask::Xlsx(task)) => {
+                review_xlsx_finding(task, &finding_id, selected, replacement.as_deref())
+                    .map_err(xlsx_review_error)?;
+                xlsx_text_review_findings(task)?
             }
             _ => {
                 return Err(DesktopCommandError::new(
@@ -1090,7 +1119,14 @@ fn choose_and_export_scan(
     }
     let context = match runtime_context(&app, state.inner()) {
         Ok(context) => Some(context),
-        Err(_) if matches!(file_kind, DesktopFileKind::Text | DesktopFileKind::Word) => None,
+        Err(_)
+            if matches!(
+                file_kind,
+                DesktopFileKind::Text | DesktopFileKind::Word | DesktopFileKind::Spreadsheet
+            ) =>
+        {
+            None
+        }
         Err(failure) => {
             state.worker_running.store(false, Ordering::Release);
             return Err(DesktopCommandError::new(
@@ -1165,6 +1201,13 @@ fn choose_and_export_scan(
             )
             .map(|report| report.complete)
             .map_err(|error| docx_export_error_code(&error)),
+            StoredScanTask::Xlsx(task) => export_xlsx_task_with_runtimes(
+                task,
+                &output,
+                context.as_deref().map(|context| &context.registry),
+            )
+            .map(|report| report.complete)
+            .map_err(|error| xlsx_export_error_code(&error)),
         })
         .await;
         match result {
@@ -1374,19 +1417,44 @@ fn review_findings(findings: &[ImageFinding]) -> Vec<DesktopReviewFinding> {
 fn text_review_findings(
     task: &TaskDraft,
 ) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
-    document_text_review_findings(&task.document.parts, &task.findings, false)
+    document_text_review_findings(
+        &task.document.parts,
+        &task.findings,
+        TextReviewPresentation::Plain,
+    )
 }
 
 fn docx_text_review_findings(
     task: &DocxTaskDraft,
 ) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
-    document_text_review_findings(&task.document.parts, &task.findings, true)
+    document_text_review_findings(
+        &task.document.parts,
+        &task.findings,
+        TextReviewPresentation::Docx,
+    )
+}
+
+fn xlsx_text_review_findings(
+    task: &XlsxTaskDraft,
+) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
+    document_text_review_findings(
+        &task.document.parts,
+        &task.findings,
+        TextReviewPresentation::Xlsx,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum TextReviewPresentation {
+    Plain,
+    Docx,
+    Xlsx,
 }
 
 fn document_text_review_findings(
     parts: &[DocumentPart],
     findings: &[Finding],
-    include_section_label: bool,
+    presentation: TextReviewPresentation,
 ) -> Result<Vec<DesktopTextReviewFinding>, DesktopCommandError> {
     findings
         .iter()
@@ -1410,14 +1478,24 @@ fn document_text_review_findings(
                 .iter()
                 .filter(|candidate| candidate.kind == part.kind)
                 .count();
+            let (section_label, can_apply, review_note) = match presentation {
+                TextReviewPresentation::Plain => (None, true, None),
+                TextReviewPresentation::Docx => (
+                    Some(docx_section_label(&part.kind, part_number)),
+                    true,
+                    None,
+                ),
+                TextReviewPresentation::Xlsx => xlsx_review_presentation(part, part_number),
+            };
             let before_start = finding.start.saturating_sub(TEXT_REVIEW_CONTEXT_CHARS);
             let after_end = (finding.end + TEXT_REVIEW_CONTEXT_CHARS).min(characters.len());
             Ok(DesktopTextReviewFinding {
                 finding_id: finding.id.clone(),
                 entity_type: entity_type_code(finding.entity_type).to_owned(),
                 confidence: finding.confidence,
-                section_label: include_section_label
-                    .then(|| docx_section_label(&part.kind, part_number)),
+                section_label,
+                can_apply,
+                review_note,
                 context_before: characters[before_start..finding.start].iter().collect(),
                 matched_text,
                 context_after: characters[finding.end..after_end].iter().collect(),
@@ -1443,6 +1521,101 @@ fn docx_section_label(kind: &str, part_number: usize) -> String {
         _ => "文档内容",
     };
     format!("{label} · 内容 {part_number}")
+}
+
+fn xlsx_review_presentation(
+    part: &DocumentPart,
+    part_number: usize,
+) -> (Option<String>, bool, Option<String>) {
+    let worksheet = safe_locator_ordinal(&part.locator, "xl/worksheets/sheet");
+    let cell = safe_locator_reference(&part.locator, "#cell=");
+    let label = match part.kind.as_str() {
+        "cell" | "number" | "formula" | "formula_cache" => {
+            let value_kind = match part.kind.as_str() {
+                "number" => "数值",
+                "formula" => "公式",
+                "formula_cache" => "公式缓存",
+                _ => "文本",
+            };
+            match (worksheet, cell) {
+                (Some(sheet), Some(cell)) => {
+                    format!("工作表 {sheet} · 单元格 {cell} · {value_kind}")
+                }
+                (_, Some(cell)) => format!("单元格 {cell} · {value_kind}"),
+                _ => format!("{value_kind} · 内容 {part_number}"),
+            }
+        }
+        "comment" => {
+            let comment = safe_locator_ordinal(&part.locator, "xl/comments");
+            let cell = safe_locator_reference(&part.locator, "#comment=");
+            match (comment, cell) {
+                (Some(comment), Some(cell)) => format!("批注 {comment} · 单元格 {cell}"),
+                _ => format!("批注 · 内容 {part_number}"),
+            }
+        }
+        "header_footer" => {
+            let area = if part.locator.contains("Footer") {
+                "页脚"
+            } else {
+                "页眉"
+            };
+            worksheet.map_or_else(
+                || format!("{area} · 内容 {part_number}"),
+                |sheet| format!("工作表 {sheet} · {area}"),
+            )
+        }
+        "drawing_text" => safe_locator_ordinal(&part.locator, "xl/drawings/drawing").map_or_else(
+            || format!("绘图文字 · 内容 {part_number}"),
+            |drawing| format!("绘图 {drawing} · 文字 {part_number}"),
+        ),
+        "sheet_name" => safe_marker_ordinal(&part.locator, "#sheet=").map_or_else(
+            || format!("工作表名称 · 内容 {part_number}"),
+            |sheet| format!("工作表 {sheet} · 名称"),
+        ),
+        "defined_name" => safe_marker_ordinal(&part.locator, "#definedName=").map_or_else(
+            || format!("定义名称 · 内容 {part_number}"),
+            |name| format!("定义名称 {name}"),
+        ),
+        _ => format!("工作簿内容 · 内容 {part_number}"),
+    };
+    let can_apply = part.kind != "sheet_name";
+    let review_note = match part.kind.as_str() {
+        "sheet_name" => Some("工作表名称当前不能安全自动改名，只能明确保留。".to_owned()),
+        "formula" | "formula_cache" => {
+            Some("此决定会同步到同一单元格的公式和缓存；应用后整格转为普通文本。".to_owned())
+        }
+        "defined_name" => Some("应用处理会删除整个定义名称。".to_owned()),
+        _ => None,
+    };
+    (Some(label), can_apply, review_note)
+}
+
+fn safe_locator_ordinal(locator: &str, prefix: &str) -> Option<usize> {
+    let suffix = locator.strip_prefix(prefix)?;
+    let digits = suffix
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+fn safe_marker_ordinal(locator: &str, marker: &str) -> Option<usize> {
+    let suffix = locator.split_once(marker)?.1;
+    let digits = suffix
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+fn safe_locator_reference(locator: &str, marker: &str) -> Option<String> {
+    let value = locator.split_once(marker)?.1.split('#').next()?;
+    (value.len() <= 20
+        && !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '$'))
+    .then(|| value.to_owned())
 }
 
 fn text_review_data_error() -> DesktopCommandError {
@@ -1544,6 +1717,25 @@ fn docx_review_error(error: DocxWorkflowError) -> DesktopCommandError {
     }
 }
 
+fn xlsx_review_error(error: XlsxWorkflowError) -> DesktopCommandError {
+    match error {
+        XlsxWorkflowError::Text(error) => text_review_error(error),
+        XlsxWorkflowError::SheetRenameUnsupported(_) => DesktopCommandError::new(
+            "XLSX_SHEET_RENAME_UNSUPPORTED",
+            "工作表名称当前不能安全自动改名，请选择保留原文。",
+        ),
+        XlsxWorkflowError::InvalidFinding(_)
+        | XlsxWorkflowError::EmbeddedImageTaskMismatch(_)
+        | XlsxWorkflowError::ConflictingFormulaReplacement(_) => {
+            DesktopCommandError::new("REVIEW_DATA_INVALID", "XLSX 复核数据无效，请重新扫描。")
+        }
+        XlsxWorkflowError::InvalidPolicy(_) | XlsxWorkflowError::PolicySnapshotMismatch => {
+            DesktopCommandError::new("POLICY_INVALID", "任务策略快照无效，请重新扫描。")
+        }
+        _ => DesktopCommandError::new("REVIEW_UPDATE_FAILED", "XLSX 复核修改未能安全保存。"),
+    }
+}
+
 fn run_scan_batch(app: AppHandle, candidates: Vec<ScanCandidate>) {
     let (context, runtime_failure_code) =
         match runtime_context(&app, app.state::<DesktopState>().inner()) {
@@ -1596,6 +1788,9 @@ fn run_scan_batch(app: AppHandle, candidates: Vec<ScanCandidate>) {
             }
             DesktopFileKind::Word => {
                 scan_docx_candidate(&app, &candidate, context.as_deref(), &policy)
+            }
+            DesktopFileKind::Spreadsheet => {
+                scan_xlsx_candidate(&app, &candidate, context.as_deref(), &policy)
             }
             DesktopFileKind::Image => scan_image_candidate(
                 &app,
@@ -1683,6 +1878,48 @@ fn scan_docx_candidate(
         }
         Err(error) => update_scan(app, &candidate.id, |record| {
             record.block(docx_error_code(&error))
+        }),
+    }
+}
+
+fn scan_xlsx_candidate(
+    app: &AppHandle,
+    candidate: &ScanCandidate,
+    context: Option<&RuntimeContext>,
+    policy: &PolicyConfig,
+) {
+    let Some(path) = registered_source_path(&candidate.source) else {
+        update_scan(app, &candidate.id, |record| {
+            record.block("SCAN_SOURCE_INVALID")
+        });
+        return;
+    };
+    update_scan(app, &candidate.id, |record| {
+        record.stage = DesktopScanStage::DetectingText;
+        record.total_units = 1;
+    });
+    let result = scan_xlsx_with_policy(
+        path,
+        policy,
+        context.map(|context| &context.registry),
+        context.map(|context| context.ocr_runtime_id.as_str()),
+    );
+    if candidate.cancel_requested.load(Ordering::Acquire) {
+        update_scan(app, &candidate.id, ScanRecord::cancel);
+        return;
+    }
+    match result {
+        Ok(task) => {
+            if let Some(code) = xlsx_blocking_diagnostic(&task) {
+                update_scan(app, &candidate.id, |record| record.block(code));
+            } else {
+                update_scan(app, &candidate.id, |record| {
+                    record.finish(StoredScanTask::Xlsx(Box::new(task)))
+                });
+            }
+        }
+        Err(error) => update_scan(app, &candidate.id, |record| {
+            record.block(xlsx_error_code(&error))
         }),
     }
 }
@@ -2013,6 +2250,57 @@ fn docx_blocking_diagnostic(task: &DocxTaskDraft) -> Option<&'static str> {
         })
 }
 
+fn xlsx_task_metrics(task: &XlsxTaskDraft) -> ScanMetrics {
+    let image_groups = xlsx_image_group_states(task);
+    ScanMetrics {
+        finding_groups: task.findings.len() + image_groups.len(),
+        unreviewed_groups: task
+            .findings
+            .iter()
+            .filter(|finding| !finding.reviewed)
+            .count()
+            + image_groups.values().filter(|reviewed| !**reviewed).count(),
+        page_count: task.embedded_images.len(),
+        diagnostic_count: task.diagnostics.len()
+            + task
+                .embedded_images
+                .iter()
+                .map(|embedded| embedded.task.diagnostics.len())
+                .sum::<usize>(),
+    }
+}
+
+fn xlsx_image_group_states(task: &XlsxTaskDraft) -> BTreeMap<(usize, &str), bool> {
+    let mut groups = BTreeMap::new();
+    for (image_index, embedded) in task.embedded_images.iter().enumerate() {
+        for finding in &embedded.task.findings {
+            groups
+                .entry((image_index, finding.group_id.as_str()))
+                .and_modify(|reviewed| *reviewed &= finding.reviewed)
+                .or_insert(finding.reviewed);
+        }
+    }
+    groups
+}
+
+fn xlsx_unreviewed_image_groups(task: &XlsxTaskDraft) -> usize {
+    xlsx_image_group_states(task)
+        .values()
+        .filter(|reviewed| !**reviewed)
+        .count()
+}
+
+fn xlsx_blocking_diagnostic(task: &XlsxTaskDraft) -> Option<&'static str> {
+    task.diagnostics
+        .iter()
+        .find_map(|diagnostic| match diagnostic.code.as_str() {
+            "XLSX_EMBEDDED_IMAGE_FORMAT_UNSUPPORTED" => Some("XLSX_EMBEDDED_IMAGE_UNSUPPORTED"),
+            "XLSX_EMBEDDED_IMAGES_PENDING" => Some("OCR_RUNTIME_MISSING"),
+            "XLSX_UNSUPPORTED_PAYLOAD" => Some("XLSX_UNSUPPORTED_PAYLOAD"),
+            _ => None,
+        })
+}
+
 fn image_error_code(error: &ImageWorkflowError) -> &'static str {
     match error {
         ImageWorkflowError::ImageTooLarge | ImageWorkflowError::ImageDimensionsTooLarge => {
@@ -2056,6 +2344,27 @@ fn docx_error_code(error: &DocxWorkflowError) -> &'static str {
         DocxWorkflowError::InvalidPolicy(_) => "POLICY_INVALID",
         DocxWorkflowError::Io(_) => "DOCX_READ_FAILED",
         _ => "DOCX_SCAN_FAILED",
+    }
+}
+
+fn xlsx_error_code(error: &XlsxWorkflowError) -> &'static str {
+    match error {
+        XlsxWorkflowError::PackageTooLarge
+        | XlsxWorkflowError::TooManyEntries
+        | XlsxWorkflowError::EntryTooLarge(_)
+        | XlsxWorkflowError::SuspiciousCompression(_) => "XLSX_LIMIT_EXCEEDED",
+        XlsxWorkflowError::EncryptedEntry => "ENCRYPTED_XLSX_UNSUPPORTED",
+        XlsxWorkflowError::UnsupportedCompression(_)
+        | XlsxWorkflowError::UnsafeEntryName(_)
+        | XlsxWorkflowError::MissingRequiredEntry(_)
+        | XlsxWorkflowError::InvalidXml(_)
+        | XlsxWorkflowError::MissingTextContent
+        | XlsxWorkflowError::Zip(_) => "INVALID_XLSX",
+        XlsxWorkflowError::Text(error) => text_error_code(error),
+        XlsxWorkflowError::EmbeddedImage(error) => image_error_code(error),
+        XlsxWorkflowError::InvalidPolicy(_) => "POLICY_INVALID",
+        XlsxWorkflowError::Io(_) => "XLSX_READ_FAILED",
+        _ => "XLSX_SCAN_FAILED",
     }
 }
 
@@ -2104,6 +2413,32 @@ fn docx_export_error_code(error: &DocxWorkflowError) -> &'static str {
         DocxWorkflowError::EmbeddedImage(error) => image_export_error_code(error),
         DocxWorkflowError::Io(_) | DocxWorkflowError::Zip(_) => "OUTPUT_WRITE_FAILED",
         _ => "DOCX_EXPORT_FAILED",
+    }
+}
+
+fn xlsx_export_error_code(error: &XlsxWorkflowError) -> &'static str {
+    match error {
+        XlsxWorkflowError::OutputExists(_) => "OUTPUT_EXISTS",
+        XlsxWorkflowError::WouldOverwriteSource => "OUTPUT_CONFLICT",
+        XlsxWorkflowError::OutputTypeMismatch => "OUTPUT_TYPE_INVALID",
+        XlsxWorkflowError::UnreviewedFindings(_) => "REVIEW_REQUIRED",
+        XlsxWorkflowError::VerificationFailed(_) => "VERIFICATION_FAILED",
+        XlsxWorkflowError::SourceChanged => "SOURCE_CHANGED",
+        XlsxWorkflowError::EmbeddedImagesUnsupported
+        | XlsxWorkflowError::EmbeddedImageRuntimeRequired => "OCR_RUNTIME_MISSING",
+        XlsxWorkflowError::UnsupportedEmbeddedImageType(_) => "XLSX_EMBEDDED_IMAGE_UNSUPPORTED",
+        XlsxWorkflowError::UnsupportedPayload(_) => "XLSX_UNSUPPORTED_PAYLOAD",
+        XlsxWorkflowError::SheetRenameUnsupported(_) => "XLSX_SHEET_RENAME_UNSUPPORTED",
+        XlsxWorkflowError::InvalidPolicy(_) | XlsxWorkflowError::PolicySnapshotMismatch => {
+            "POLICY_INVALID"
+        }
+        XlsxWorkflowError::InvalidFinding(_)
+        | XlsxWorkflowError::EmbeddedImageTaskMismatch(_)
+        | XlsxWorkflowError::ConflictingFormulaReplacement(_) => "REVIEW_DATA_INVALID",
+        XlsxWorkflowError::Text(error) => text_export_error_code(error),
+        XlsxWorkflowError::EmbeddedImage(error) => image_export_error_code(error),
+        XlsxWorkflowError::Io(_) | XlsxWorkflowError::Zip(_) => "OUTPUT_WRITE_FAILED",
+        _ => "XLSX_EXPORT_FAILED",
     }
 }
 
@@ -2182,6 +2517,7 @@ fn inspect_file(id: String, display_name: String, path: &Path, size_bytes: u64) 
         kind,
         DesktopFileKind::Text
             | DesktopFileKind::Word
+            | DesktopFileKind::Spreadsheet
             | DesktopFileKind::Pdf
             | DesktopFileKind::Image
     ) {
@@ -2325,18 +2661,25 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use llamask_core::model::{EntityType, ImageFinding, ImageRect};
-    use llamask_core::{PolicyConfig, scan_docx_with_policy, scan_text_with_policy};
+    use llamask_core::model::{DocumentPart, EntityType, ImageFinding, ImageRect};
+    use llamask_core::{
+        PolicyConfig, scan_docx_with_policy, scan_text_with_policy, scan_xlsx_with_policy,
+    };
 
     use super::{
         DesktopFileKind, DesktopOutputKind, DesktopScanStage, DesktopScanStatus, DesktopSourceKind,
         DesktopState, MAX_TEXT_BYTES, ScanRecord, docx_task_metrics, docx_text_review_findings,
         export_name_and_extension, inspect_file, register_clipboard_text, register_files,
-        review_findings, text_review_findings,
+        review_findings, text_review_findings, xlsx_review_presentation, xlsx_task_metrics,
+        xlsx_text_review_findings,
     };
 
     fn docx_fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/docx/comprehensive.docx")
+    }
+
+    fn xlsx_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/xlsx/comprehensive.xlsx")
     }
 
     #[test]
@@ -2376,6 +2719,23 @@ mod tests {
         let json = serde_json::to_string(&candidate).unwrap();
 
         assert_eq!(candidate.kind, DesktopFileKind::Word);
+        assert!(candidate.ready);
+        assert!(candidate.scan_supported);
+        assert_eq!(candidate.reason_code, "READY");
+        assert!(!json.contains("/private/customer"));
+    }
+
+    #[test]
+    fn classifies_xlsx_as_scannable_without_exposing_its_path() {
+        let candidate = inspect_file(
+            "file-4".to_owned(),
+            "finance.xlsx".to_owned(),
+            Path::new("/private/customer/finance.xlsx"),
+            1024,
+        );
+        let json = serde_json::to_string(&candidate).unwrap();
+
+        assert_eq!(candidate.kind, DesktopFileKind::Spreadsheet);
         assert!(candidate.ready);
         assert!(candidate.scan_supported);
         assert_eq!(candidate.reason_code, "READY");
@@ -2543,6 +2903,8 @@ mod tests {
         assert_eq!(findings[0].context_before.chars().count(), 80);
         assert_eq!(findings[0].context_after.chars().count(), 80);
         assert_eq!(findings[0].matched_text, "case@example.com");
+        assert!(findings[0].can_apply);
+        assert!(findings[0].review_note.is_none());
         assert!(!json.contains("stdin://clipboard"));
         assert!(!json.contains("sourcePath"));
     }
@@ -2567,6 +2929,58 @@ mod tests {
         assert!(!json.contains("word/document.xml"));
         assert!(!json.contains("comprehensive.docx"));
         assert!(!json.contains("sourcePath"));
+    }
+
+    #[test]
+    fn xlsx_review_payload_uses_cell_labels_without_package_locators() {
+        let mut policy = PolicyConfig::default();
+        policy.detectors.clear();
+        let task = scan_xlsx_with_policy(&xlsx_fixture_path(), &policy, None, None).unwrap();
+        let findings = xlsx_text_review_findings(&task).unwrap();
+        let metrics = xlsx_task_metrics(&task);
+        let json = serde_json::to_string(&findings).unwrap();
+
+        assert_eq!(metrics.finding_groups, findings.len());
+        assert_eq!(metrics.page_count, 0);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.section_label.is_some())
+        );
+        assert!(findings.iter().any(|finding| {
+            finding
+                .section_label
+                .as_deref()
+                .is_some_and(|label| label.starts_with("工作表 1 · 单元格"))
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding
+                .review_note
+                .as_deref()
+                .is_some_and(|note| note.contains("公式和缓存"))
+        }));
+        assert!(!json.contains("xl/worksheets"));
+        assert!(!json.contains("#cell="));
+        assert!(!json.contains("comprehensive.xlsx"));
+        assert!(!json.contains("sourcePath"));
+    }
+
+    #[test]
+    fn xlsx_sheet_name_review_is_safe_and_retain_only() {
+        let part = DocumentPart {
+            id: "part-sheet-name".to_owned(),
+            kind: "sheet_name".to_owned(),
+            locator: "xl/workbook.xml#sheet=000002#name".to_owned(),
+            text: "客户机密项目".to_owned(),
+            char_len: 6,
+        };
+
+        let (label, can_apply, note) = xlsx_review_presentation(&part, 1);
+
+        assert_eq!(label.as_deref(), Some("工作表 2 · 名称"));
+        assert!(!can_apply);
+        assert!(note.is_some_and(|note| note.contains("只能明确保留")));
+        assert!(!label.unwrap().contains("客户机密项目"));
     }
 
     #[test]

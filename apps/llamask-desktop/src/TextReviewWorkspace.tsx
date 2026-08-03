@@ -60,7 +60,7 @@ export function TextReviewWorkspace({
   const pendingFindings = review.findings.filter((finding) => !finding.reviewed).length;
   const pendingResults = pendingFindings + review.unreviewedImageGroups;
   const clipboardTask = file.sourceKind === "clipboard";
-  const wordTask = file.kind === "word";
+  const structuredDocument = file.kind === "word" || file.kind === "spreadsheet";
 
   return (
     <div className="review-backdrop" role="dialog" aria-modal="true" aria-label="文本脱敏结果复核">
@@ -116,7 +116,9 @@ export function TextReviewWorkspace({
               <div className="empty-text-review">
                 <ShieldIcon />
                 <strong>
-                  {wordTask ? "没有发现需要处理的文字敏感信息" : "没有发现需要处理的敏感信息"}
+                  {structuredDocument
+                    ? "没有发现需要处理的文字敏感信息"
+                    : "没有发现需要处理的敏感信息"}
                 </strong>
                 <span>
                   {review.embeddedImageCount > 0
@@ -156,13 +158,17 @@ export function TextReviewWorkspace({
                     <span>{finding.contextAfter}</span>
                   </p>
 
+                  {finding.reviewNote && (
+                    <p className="finding-review-note">{finding.reviewNote}</p>
+                  )}
+
                   <label className="replacement-field">
                     <span>替换为</span>
                     <input
                       type="text"
                       maxLength={256}
                       value={replacement}
-                      disabled={busy}
+                      disabled={busy || !finding.canApply}
                       onChange={(event) =>
                         setReplacements((current) => ({
                           ...current,
@@ -177,12 +183,12 @@ export function TextReviewWorkspace({
                     <button
                       className="secondary-button"
                       type="button"
-                      disabled={busy}
+                      disabled={busy || !finding.canApply}
                       onClick={() =>
                         void onSetFinding(finding.findingId, true, replacement)
                       }
                     >
-                      应用替换
+                      {finding.canApply ? "应用替换" : "不可自动替换"}
                     </button>
                     <button
                       className="text-button"
