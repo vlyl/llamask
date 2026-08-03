@@ -152,7 +152,7 @@ export function ReviewWorkspace({
   const groups = useMemo(() => groupState(findings), [findings]);
   const activeFinding = findings.find((finding) => finding.findingId === activeFindingId);
   const pendingGroups = groups.filter((group) => !group.reviewed).length;
-  const embeddedImage = file.kind === "word";
+  const embeddedImage = file.kind === "word" || file.kind === "spreadsheet";
 
   const sourcePoint = (clientX: number, clientY: number) => {
     const bounds = overlayRef.current?.getBoundingClientRect();

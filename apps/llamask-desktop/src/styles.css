@@ -1150,6 +1150,17 @@ button:focus-visible {
   border-radius: 999px;
 }
 
+.finding-review-note {
+  margin: 0;
+  padding: 8px 10px;
+  color: #745c22;
+  font-size: 9px;
+  line-height: 1.5;
+  background: #fbf7e9;
+  border: 1px solid #ece0b8;
+  border-radius: 7px;
+}
+
 .text-finding-heading small {
   color: #87948e;
   font-size: 9px;

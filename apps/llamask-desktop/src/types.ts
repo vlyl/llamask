@@ -130,6 +130,8 @@ export interface DesktopTextReviewFinding {
   entityType: string;
   confidence: number;
   sectionLabel: string | null;
+  canApply: boolean;
+  reviewNote: string | null;
   contextBefore: string;
   matchedText: string;
   contextAfter: string;

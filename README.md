@@ -337,7 +337,7 @@ support beyond PNG/JPEG.
 Desktop development lives under `apps/llamask-desktop`. It provides a minimal
 Tauri 2 + React/TypeScript window, restricted file selection, drag and drop
 import, a Rust session-path registry, format and size preflight checks, and a
-task-list interface. TXT, Markdown, DOCX, PDF, PNG, and JPEG use the real
+task-list interface. TXT, Markdown, DOCX, XLSX, PDF, PNG, and JPEG use the real
 `llamask-core` scanner on a controlled background worker with path-free progress
 events and cooperative cancellation. Sensitive scan drafts remain in Rust
 memory. Image/PDF review requests only a bounded, re-encoded page preview and
@@ -355,6 +355,10 @@ Users can edit text replacements, retain findings, move and resize masks, add
 manual masks, and invoke fail-closed safe export through a native save dialog.
 DOCX export remains disabled until both text findings and embedded-image groups
 have been reviewed, and it reuses the Core package rewrite and residual checks.
-The next increments connect XLSX and then PPTX, followed by batch output.
+XLSX review exposes only safe worksheet ordinals, cell references, and content
+types. Formula and cache findings for the same cell are reviewed atomically;
+sheet-name findings can only be explicitly retained. Embedded images share the
+same hash-validated mask workflow, and export reuses the Core workbook rewrite
+and residual checks. The next increment connects PPTX, followed by batch output.
 See the desktop architecture document for development details and safety
 boundaries.
