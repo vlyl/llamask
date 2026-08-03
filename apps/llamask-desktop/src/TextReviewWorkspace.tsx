@@ -56,6 +56,7 @@ export function TextReviewWorkspace({
   }, [busy, initialReplacements]);
 
   const pendingFindings = review.findings.filter((finding) => !finding.reviewed).length;
+  const clipboardTask = file.sourceKind === "clipboard";
 
   return (
     <div className="review-backdrop" role="dialog" aria-modal="true" aria-label="文本脱敏结果复核">
@@ -164,7 +165,9 @@ export function TextReviewWorkspace({
           <span>
             {pendingFindings > 0
               ? `还有 ${pendingFindings} 个结果需要确认`
-              : "所有结果已复核，可以执行安全导出"}
+              : clipboardTask
+                ? "所有结果已复核，可以安全复制"
+                : "所有结果已复核，可以执行安全导出"}
           </span>
           <button
             className="primary-button"
@@ -172,7 +175,13 @@ export function TextReviewWorkspace({
             disabled={busy || exporting || pendingFindings > 0}
             onClick={() => void onExport()}
           >
-            {exporting ? "正在导出并复检…" : "保存安全副本"}
+            {exporting
+              ? clipboardTask
+                ? "正在复制并复检…"
+                : "正在导出并复检…"
+              : clipboardTask
+                ? "复制脱敏结果"
+                : "保存安全副本"}
             <ChevronRightIcon />
           </button>
         </footer>

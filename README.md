@@ -342,10 +342,13 @@ task-list interface. TXT, Markdown, PDF, PNG, and JPEG use the real
 events and cooperative cancellation. Sensitive scan drafts remain in Rust
 memory. Image/PDF review requests only a bounded, re-encoded page preview and
 geometry. Text review requests only the matched value and 80 Unicode characters
-of context on each side, never the source path or whole document. Users can edit
-text replacements, retain findings, move and resize masks, add manual masks,
-and invoke fail-closed safe export and residual rescan through a native save
-dialog. The next increment connects clipboard and Office documents, followed
-by batch output.
+of context on each side, never the source path or whole document. Clipboard
+text can now be imported through an explicit user action, scanned and reviewed
+with the same bounded text workflow, and copied back only after fail-closed
+residual verification succeeds. Clipboard source text remains in Rust session
+memory and is never sent in progress events or written to application storage.
+Users can edit text replacements, retain findings, move and resize masks, add
+manual masks, and invoke fail-closed safe export through a native save dialog.
+The next increment connects Office documents, followed by batch output.
 See the desktop architecture document for development details and safety
 boundaries.

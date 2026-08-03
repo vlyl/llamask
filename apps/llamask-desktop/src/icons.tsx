@@ -40,6 +40,15 @@ export function FileIcon(props: IconProps) {
   );
 }
 
+export function ClipboardIcon(props: IconProps) {
+  return (
+    <svg {...defaults} {...props}>
+      <rect x="5" y="5.5" width="14" height="15" rx="2" />
+      <path d="M9 5.5V4.8A1.8 1.8 0 0 1 10.8 3h2.4A1.8 1.8 0 0 1 15 4.8v.7M8.5 10h7M8.5 14h7" />
+    </svg>
+  );
+}
+
 export function FolderIcon(props: IconProps) {
   return (
     <svg {...defaults} {...props}>

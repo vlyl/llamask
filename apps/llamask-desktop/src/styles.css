@@ -340,6 +340,12 @@ button:focus-visible {
   font-size: 12px;
 }
 
+.secondary-button.compact {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+
 .primary-button:hover:not(:disabled) {
   background: #116e50;
 }
@@ -432,6 +438,12 @@ button:focus-visible {
   color: #84908b;
   font-size: 11px;
   line-height: 1.6;
+}
+
+.import-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .task-panel {
@@ -547,6 +559,11 @@ button:focus-visible {
 .file-badge.kind-unknown {
   color: #7f8582;
   background: #ecefed;
+}
+
+.file-badge.source-clipboard {
+  color: #6650a3;
+  background: #f0ebfb;
 }
 
 .file-copy {

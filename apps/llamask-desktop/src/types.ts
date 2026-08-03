@@ -7,11 +7,15 @@ export type DesktopFileKind =
   | "image"
   | "unknown";
 
+export type DesktopSourceKind = "file" | "clipboard";
+export type DesktopOutputKind = "file" | "clipboard";
+
 export interface ImportedFile {
   id: string;
   displayName: string;
   extension: string;
   kind: DesktopFileKind;
+  sourceKind: DesktopSourceKind;
   sizeBytes: number;
   ready: boolean;
   scanSupported: boolean;
@@ -83,6 +87,7 @@ export interface DesktopScanSummary {
   canCancel: boolean;
   errorCode: string | null;
   outputName: string | null;
+  outputKind: DesktopOutputKind | null;
   verificationComplete: boolean;
 }
 
