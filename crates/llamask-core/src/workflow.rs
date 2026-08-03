@@ -230,8 +230,16 @@ pub fn review_text_finding(
     replacement: Option<&str>,
 ) -> Result<(), WorkflowError> {
     validate_task(task)?;
-    let finding = task
-        .findings
+    review_finding(&mut task.findings, finding_id, selected, replacement)
+}
+
+pub(crate) fn review_finding(
+    findings: &mut [Finding],
+    finding_id: &str,
+    selected: bool,
+    replacement: Option<&str>,
+) -> Result<(), WorkflowError> {
+    let finding = findings
         .iter_mut()
         .find(|finding| finding.id == finding_id)
         .ok_or_else(|| WorkflowError::FindingNotFound(finding_id.to_owned()))?;

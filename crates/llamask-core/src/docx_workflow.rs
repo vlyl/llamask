@@ -14,18 +14,19 @@ use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use crate::image_workflow::{
-    ImageWorkflowError, export_image_task_with_runtimes, scan_image_with_policy,
-    verify_image_file_with_runtimes,
+    ImageWorkflowError, export_image_task_with_runtimes, render_image_task_preview,
+    scan_image_with_policy, verify_image_file_with_runtimes,
 };
 use crate::model::{
     DiagnosticSeverity, DocumentPart, DocxDocumentGraph, DocxEmbeddedImageTask,
     DocxImageResidualFinding, DocxResidualFinding, DocxSourceMetadata, DocxTaskDraft,
-    DocxVerificationReport, EntityType, FileKind, Finding, ImageTaskDraft, TaskDiagnostic,
+    DocxVerificationReport, EntityType, FileKind, Finding, ImagePreview, ImageTaskDraft,
+    TaskDiagnostic,
 };
 use crate::policy::{PolicyConfig, PolicyError};
 use crate::sidecar::RuntimeRegistry;
 use crate::text::sha256_hex;
-use crate::workflow::{WorkflowError, run_detection};
+use crate::workflow::{WorkflowError, review_finding, run_detection};
 
 const MAX_DOCX_BYTES: usize = 100 * 1024 * 1024;
 const MAX_PACKAGE_ENTRIES: usize = 10_000;
@@ -254,6 +255,51 @@ pub fn scan_docx_with_policy_and_images(
         diagnostics,
         contains_sensitive_plaintext: true,
     })
+}
+
+pub fn review_docx_finding(
+    task: &mut DocxTaskDraft,
+    finding_id: &str,
+    selected: bool,
+    replacement: Option<&str>,
+) -> Result<(), DocxWorkflowError> {
+    validate_docx_task(task)?;
+    review_finding(&mut task.findings, finding_id, selected, replacement)?;
+    Ok(())
+}
+
+pub fn render_docx_embedded_image_preview(
+    task: &DocxTaskDraft,
+    image_number: usize,
+) -> Result<ImagePreview, DocxWorkflowError> {
+    validate_docx_task(task)?;
+    let embedded = image_number
+        .checked_sub(1)
+        .and_then(|index| task.embedded_images.get(index))
+        .ok_or_else(|| {
+            DocxWorkflowError::EmbeddedImageTaskMismatch(format!(
+                "内嵌图片编号无效：{image_number}"
+            ))
+        })?;
+    let source_path = fs::canonicalize(&task.document.source.path)?;
+    let source_bytes = fs::read(&source_path)?;
+    if sha256_hex(&source_bytes) != task.document.source.sha256 {
+        return Err(DocxWorkflowError::SourceChanged);
+    }
+    let summary = validate_package(&source_bytes)?;
+    embedded_tasks_by_entry(task, &summary)?;
+
+    let mut archive = ZipArchive::new(Cursor::new(source_bytes))?;
+    let mut entry = archive.by_name(&embedded.entry_name)?;
+    let mut image_bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut image_bytes)?;
+    let extension = embedded_image_extension(&embedded.entry_name)?;
+    let temporary = tempdir()?;
+    let image_path = temporary.path().join(format!("preview.{extension}"));
+    fs::write(&image_path, image_bytes)?;
+    let mut preview_task = embedded.task.clone();
+    preview_task.source.path = image_path.to_string_lossy().into_owned();
+    render_image_task_preview(&preview_task).map_err(DocxWorkflowError::EmbeddedImage)
 }
 
 fn validate_package(bytes: &[u8]) -> Result<PackageSummary, DocxWorkflowError> {
@@ -1734,6 +1780,7 @@ mod tests {
     use std::io::{Cursor, Read, Write};
     use std::path::PathBuf;
 
+    use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
     use zip::{ZipArchive, ZipWriter};
@@ -1746,7 +1793,8 @@ mod tests {
 
     use super::{
         DocxWorkflowError, StoryEntry, XmlGrouping, export_docx_task_with_runtimes,
-        extract_story_parts, scan_docx_with_policy, verify_docx_file_with_runtimes,
+        extract_story_parts, render_docx_embedded_image_preview, review_docx_finding,
+        scan_docx_with_policy, verify_docx_file_with_runtimes,
     };
 
     fn fixture_path() -> PathBuf {
@@ -1804,6 +1852,33 @@ mod tests {
         for expected in ["body", "header", "footer", "footnote", "comment"] {
             assert!(finding_kinds.contains(&expected));
         }
+    }
+
+    #[test]
+    fn docx_text_review_updates_only_the_requested_finding() {
+        let source = fixture_path();
+        let source_before = fs::read(&source).unwrap();
+        let mut task = scan_docx_with_policy(&source, &policy_without_models(), None).unwrap();
+        let finding_id = task.findings[0].id.clone();
+
+        review_docx_finding(&mut task, &finding_id, true, Some("[自定义替换]")).unwrap();
+
+        let reviewed = task
+            .findings
+            .iter()
+            .find(|finding| finding.id == finding_id)
+            .unwrap();
+        assert!(reviewed.selected);
+        assert!(reviewed.reviewed);
+        assert_eq!(reviewed.replacement, "[自定义替换]");
+        assert_eq!(fs::read(source).unwrap(), source_before);
+
+        assert!(matches!(
+            review_docx_finding(&mut task, &finding_id, true, Some(&"x".repeat(257))),
+            Err(DocxWorkflowError::TextDetection(
+                crate::workflow::WorkflowError::ReplacementTooLong
+            ))
+        ));
     }
 
     #[test]
@@ -1918,7 +1993,10 @@ mod tests {
                 .unwrap();
             writer.write_all(&data).unwrap();
         }
-        let image_bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let mut image_bytes = Vec::new();
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, Rgba([255, 255, 255, 255])))
+            .write_to(&mut Cursor::new(&mut image_bytes), ImageFormat::Png)
+            .unwrap();
         writer
             .start_file("word/media/image1.png", SimpleFileOptions::default())
             .unwrap();
@@ -1947,6 +2025,13 @@ mod tests {
                 contains_sensitive_plaintext: true,
             },
         });
+        let preview = render_docx_embedded_image_preview(&task, 1).unwrap();
+        assert_eq!((preview.width, preview.height), (1, 1));
+        assert!(preview.png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(matches!(
+            render_docx_embedded_image_preview(&task, 2),
+            Err(DocxWorkflowError::EmbeddedImageTaskMismatch(_))
+        ));
         let output = directory.path().join("blocked.docx");
         assert!(matches!(
             export_docx_task_with_runtimes(&task, &output, None),

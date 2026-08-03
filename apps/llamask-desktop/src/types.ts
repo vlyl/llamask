@@ -129,6 +129,7 @@ export interface DesktopTextReviewFinding {
   findingId: string;
   entityType: string;
   confidence: number;
+  sectionLabel: string | null;
   contextBefore: string;
   matchedText: string;
   contextAfter: string;
@@ -140,6 +141,8 @@ export interface DesktopTextReviewFinding {
 export interface DesktopTextReview {
   id: string;
   totalCharacters: number;
+  embeddedImageCount: number;
+  unreviewedImageGroups: number;
   findings: DesktopTextReviewFinding[];
 }
 

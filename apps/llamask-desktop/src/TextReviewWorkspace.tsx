@@ -30,6 +30,7 @@ interface TextReviewWorkspaceProps {
     selected: boolean,
     replacement?: string,
   ) => Promise<void>;
+  onOpenEmbeddedImages?: () => Promise<void>;
   onExport: () => Promise<void>;
 }
 
@@ -40,6 +41,7 @@ export function TextReviewWorkspace({
   exporting,
   onClose,
   onSetFinding,
+  onOpenEmbeddedImages,
   onExport,
 }: TextReviewWorkspaceProps) {
   const initialReplacements = useMemo(
@@ -56,7 +58,9 @@ export function TextReviewWorkspace({
   }, [busy, initialReplacements]);
 
   const pendingFindings = review.findings.filter((finding) => !finding.reviewed).length;
+  const pendingResults = pendingFindings + review.unreviewedImageGroups;
   const clipboardTask = file.sourceKind === "clipboard";
+  const wordTask = file.kind === "word";
 
   return (
     <div className="review-backdrop" role="dialog" aria-modal="true" aria-label="文本脱敏结果复核">
@@ -66,7 +70,8 @@ export function TextReviewWorkspace({
             <p className="eyebrow">本地文本复核 · 有界上下文</p>
             <h2>{file.displayName}</h2>
             <span>
-              {review.totalCharacters.toLocaleString()} 个字符 · {review.findings.length} 个结果 · {pendingFindings} 个待确认
+              {review.totalCharacters.toLocaleString()} 个字符 · {review.findings.length} 个文字结果
+              {review.embeddedImageCount > 0 ? ` · ${review.embeddedImageCount} 张内嵌图片` : ""} · {pendingResults} 个待确认
             </span>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="关闭复核">
@@ -78,16 +83,46 @@ export function TextReviewWorkspace({
           <div className="review-security-note text-review-security-note">
             <ShieldIcon />
             <span>
-              每个结果只显示命中内容及前后各 80 个字符；源文件路径和完整文档不会进入界面状态或浏览器存储。
+              每个结果只显示命中内容及前后各 80 个字符；源文件路径、OOXML 定位和完整文档不会进入界面状态或浏览器存储。
             </span>
           </div>
+
+          {review.embeddedImageCount > 0 && onOpenEmbeddedImages && (
+            <div className="embedded-image-review-card">
+              <div>
+                <ShieldIcon />
+                <span>
+                  <strong>{review.embeddedImageCount} 张内嵌图片</strong>
+                  <small>
+                    {review.unreviewedImageGroups > 0
+                      ? `${review.unreviewedImageGroups} 个遮罩结果仍需确认`
+                      : "可以逐张检查并补充手动遮罩"}
+                  </small>
+                </span>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={busy}
+                onClick={() => void onOpenEmbeddedImages()}
+              >
+                复核内嵌图片
+              </button>
+            </div>
+          )}
 
           <div className="text-finding-list">
             {review.findings.length === 0 && (
               <div className="empty-text-review">
                 <ShieldIcon />
-                <strong>没有发现需要处理的敏感信息</strong>
-                <span>仍会在导出前执行一次独立残留复扫。</span>
+                <strong>
+                  {wordTask ? "没有发现需要处理的文字敏感信息" : "没有发现需要处理的敏感信息"}
+                </strong>
+                <span>
+                  {review.embeddedImageCount > 0
+                    ? "内嵌图片仍可逐张检查；导出前会执行独立残留复扫。"
+                    : "仍会在导出前执行一次独立残留复扫。"}
+                </span>
               </div>
             )}
             {review.findings.map((finding, index) => {
@@ -101,6 +136,9 @@ export function TextReviewWorkspace({
                     <div>
                       <span className="finding-number">{String(index + 1).padStart(2, "0")}</span>
                       <strong>{entityLabels[finding.entityType] ?? finding.entityType}</strong>
+                      {finding.sectionLabel && (
+                        <span className="finding-section">{finding.sectionLabel}</span>
+                      )}
                       <small>{Math.round(finding.confidence * 100)}% 置信度</small>
                     </div>
                     <em>
@@ -163,8 +201,8 @@ export function TextReviewWorkspace({
 
         <footer className="review-footer">
           <span>
-            {pendingFindings > 0
-              ? `还有 ${pendingFindings} 个结果需要确认`
+            {pendingResults > 0
+              ? `还有 ${pendingResults} 个结果需要确认`
               : clipboardTask
                 ? "所有结果已复核，可以安全复制"
                 : "所有结果已复核，可以执行安全导出"}
@@ -172,7 +210,7 @@ export function TextReviewWorkspace({
           <button
             className="primary-button"
             type="button"
-            disabled={busy || exporting || pendingFindings > 0}
+            disabled={busy || exporting || pendingResults > 0}
             onClick={() => void onExport()}
           >
             {exporting

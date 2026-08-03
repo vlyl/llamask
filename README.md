@@ -337,18 +337,24 @@ support beyond PNG/JPEG.
 Desktop development lives under `apps/llamask-desktop`. It provides a minimal
 Tauri 2 + React/TypeScript window, restricted file selection, drag and drop
 import, a Rust session-path registry, format and size preflight checks, and a
-task-list interface. TXT, Markdown, PDF, PNG, and JPEG use the real
+task-list interface. TXT, Markdown, DOCX, PDF, PNG, and JPEG use the real
 `llamask-core` scanner on a controlled background worker with path-free progress
 events and cooperative cancellation. Sensitive scan drafts remain in Rust
 memory. Image/PDF review requests only a bounded, re-encoded page preview and
 geometry. Text review requests only the matched value and 80 Unicode characters
-of context on each side, never the source path or whole document. Clipboard
+of context on each side, never the source path or whole document. DOCX findings
+also include only a safe section label such as body, header, or comment; OOXML
+locators stay inside the Rust task. Embedded PNG/JPEG images can be reviewed in
+the same editable mask workspace after their source package hash is revalidated.
+Clipboard
 text can now be imported through an explicit user action, scanned and reviewed
 with the same bounded text workflow, and copied back only after fail-closed
 residual verification succeeds. Clipboard source text remains in Rust session
 memory and is never sent in progress events or written to application storage.
 Users can edit text replacements, retain findings, move and resize masks, add
 manual masks, and invoke fail-closed safe export through a native save dialog.
-The next increment connects Office documents, followed by batch output.
+DOCX export remains disabled until both text findings and embedded-image groups
+have been reviewed, and it reuses the Core package rewrite and residual checks.
+The next increments connect XLSX and then PPTX, followed by batch output.
 See the desktop architecture document for development details and safety
 boundaries.

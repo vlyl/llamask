@@ -1048,6 +1048,48 @@ button:focus-visible {
   font-size: 10px;
 }
 
+.embedded-image-review-card,
+.embedded-image-review-card > div,
+.embedded-image-review-card span {
+  display: flex;
+  align-items: center;
+}
+
+.embedded-image-review-card {
+  flex: none;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 14px;
+  color: #385c4d;
+  background: #f2f8f5;
+  border: 1px solid #d7e6de;
+  border-radius: 10px;
+}
+
+.embedded-image-review-card > div {
+  gap: 10px;
+}
+
+.embedded-image-review-card > div > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.embedded-image-review-card span {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.embedded-image-review-card strong {
+  font-size: 10px;
+}
+
+.embedded-image-review-card small {
+  color: #7b8b84;
+  font-size: 9px;
+}
+
 .text-finding-list {
   display: grid;
   min-height: 0;
@@ -1098,6 +1140,14 @@ button:focus-visible {
 
 .text-finding-heading strong {
   font-size: 11px;
+}
+
+.finding-section {
+  padding: 3px 6px;
+  color: #60746b;
+  font-size: 8px;
+  background: #edf3f0;
+  border-radius: 999px;
 }
 
 .text-finding-heading small {
