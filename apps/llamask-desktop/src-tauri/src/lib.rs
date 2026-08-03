@@ -13,12 +13,13 @@ use llamask_core::model::{DocumentPart, EntityType, Finding, ImageFinding};
 use llamask_core::sidecar::DetectorKind;
 use llamask_core::{
     DocxTaskDraft, DocxWorkflowError, ImageRect, ImageTaskDraft, ImageWorkflowError, PdfTaskDraft,
-    PdfWorkflowError, PolicyConfig, PptxTaskDraft, PptxWorkflowError, RuntimeRegistry, TaskDraft,
-    WorkflowError, XlsxTaskDraft, XlsxWorkflowError, add_manual_image_mask,
-    export_docx_task_with_runtimes, export_image_task_with_runtimes, export_pdf_task_with_runtimes,
-    export_pptx_task_with_runtimes, export_task_with_runtimes, export_xlsx_task_with_runtimes,
-    remove_manual_image_group, render_docx_embedded_image_preview, render_image_task_preview,
-    render_pdf_task_page_preview, render_pptx_embedded_image_preview, render_task_with_runtimes,
+    PdfWorkflowError, PolicyConfig, PptxTaskDraft, PptxWorkflowError, RuntimeRegistry,
+    RuntimeToolKind, TaskDraft, WorkflowError, XlsxTaskDraft, XlsxWorkflowError,
+    add_manual_image_mask, export_docx_task_with_runtimes, export_image_task_with_runtimes,
+    export_pdf_task_with_runtimes, export_pptx_task_with_runtimes, export_task_with_runtimes,
+    export_xlsx_task_with_runtimes, remove_manual_image_group, render_docx_embedded_image_preview,
+    render_image_task_preview, render_pdf_task_page_preview_with_runtimes,
+    render_pptx_embedded_image_preview, render_task_with_runtimes,
     render_xlsx_embedded_image_preview, review_docx_finding, review_image_group,
     review_pptx_finding, review_text_finding, review_xlsx_finding,
     scan_docx_with_policy_and_images, scan_image_with_policy, scan_path_with_policy,
@@ -915,6 +916,7 @@ fn cancel_scan(
 
 #[tauri::command]
 async fn review_scan_page(
+    app: AppHandle,
     state: State<'_, DesktopState>,
     id: String,
     page_number: usize,
@@ -939,14 +941,24 @@ async fn review_scan_page(
         record.task.clone().ok_or_else(scan_not_found_error)?
     };
     let page_count = task.page_count();
+    let pdf_runtime = if matches!(&task, StoredScanTask::Pdf(_)) {
+        Some(runtime_context(&app, state.inner()).map_err(|failure| {
+            DesktopCommandError::new(failure.code, "本地运行环境尚未通过完整性检查。")
+        })?)
+    } else {
+        None
+    };
     let preview_task = task.clone();
     let preview = tauri::async_runtime::spawn_blocking(move || match &preview_task {
         StoredScanTask::Image(task) if page_number == 1 => {
             render_image_task_preview(task).map_err(|_| "IMAGE_PREVIEW_FAILED")
         }
-        StoredScanTask::Pdf(task) => {
-            render_pdf_task_page_preview(task, page_number).map_err(|_| "PDF_PREVIEW_FAILED")
-        }
+        StoredScanTask::Pdf(task) => render_pdf_task_page_preview_with_runtimes(
+            task,
+            page_number,
+            &pdf_runtime.expect("PDF runtime loaded above").registry,
+        )
+        .map_err(|_| "PDF_PREVIEW_FAILED"),
         StoredScanTask::Docx(task) => render_docx_embedded_image_preview(task, page_number)
             .map_err(|_| "DOCX_IMAGE_PREVIEW_FAILED"),
         StoredScanTask::Xlsx(task) => render_xlsx_embedded_image_preview(task, page_number)
@@ -2470,7 +2482,7 @@ fn runtime_status(app: &AppHandle, state: &DesktopState) -> DesktopRuntimeStatus
             runtime_registry_ready: false,
             ocr_ready: false,
             ocr_runtime_id: None,
-            pdf_tools_ready: pdf_tools_available(),
+            pdf_tools_ready: pdf_tools_available(None),
             scan_ready: false,
             status_code: failure.code.to_owned(),
         },
@@ -2494,7 +2506,7 @@ fn runtime_context(
         code: "RUNTIME_REGISTRY_INVALID",
     })?;
     registry
-        .verify_installation()
+        .verify_detectors()
         .map_err(|_| RuntimeLoadFailure {
             code: "RUNTIME_ASSET_INVALID",
         })?;
@@ -2506,10 +2518,11 @@ fn runtime_context(
         .ok_or(RuntimeLoadFailure {
             code: "OCR_RUNTIME_MISSING",
         })?;
+    let pdf_tools_ready = pdf_tools_available(Some(&registry));
     let context = Arc::new(RuntimeContext {
         registry,
         ocr_runtime_id,
-        pdf_tools_ready: pdf_tools_available(),
+        pdf_tools_ready,
     });
     let mut cached = state.runtime.lock().map_err(|_| RuntimeLoadFailure {
         code: "TASK_STATE_UNAVAILABLE",
@@ -2539,13 +2552,41 @@ fn runtime_registry_path(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
-fn pdf_tools_available() -> bool {
-    command_available("LLAMASK_PDFINFO", "pdfinfo")
-        && command_available("LLAMASK_PDFTOPPM", "pdftoppm")
+fn pdf_tools_available(registry: Option<&RuntimeRegistry>) -> bool {
+    if let Some(registry) = registry {
+        let declares_pdfinfo = registry.tool(RuntimeToolKind::PdfInfo).is_some();
+        let declares_pdftoppm = registry.tool(RuntimeToolKind::PdfToPpm).is_some();
+        if declares_pdfinfo || declares_pdftoppm {
+            let Ok(Some(pdfinfo)) = registry.verified_tool(RuntimeToolKind::PdfInfo) else {
+                return false;
+            };
+            let Ok(Some(pdftoppm)) = registry.verified_tool(RuntimeToolKind::PdfToPpm) else {
+                return false;
+            };
+            return command_available(pdfinfo.as_os_str())
+                && command_available(pdftoppm.as_os_str());
+        }
+    }
+
+    if let (Some(pdfinfo), Some(pdftoppm)) = (
+        env::var_os("LLAMASK_PDFINFO"),
+        env::var_os("LLAMASK_PDFTOPPM"),
+    ) {
+        return command_available(&pdfinfo) && command_available(&pdftoppm);
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        command_available(&OsString::from("pdfinfo"))
+            && command_available(&OsString::from("pdftoppm"))
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
-fn command_available(variable: &str, fallback: &str) -> bool {
-    let executable = env::var_os(variable).unwrap_or_else(|| OsString::from(fallback));
+fn command_available(executable: &std::ffi::OsStr) -> bool {
     Command::new(executable)
         .arg("-v")
         .stdin(Stdio::null())
@@ -2980,6 +3021,7 @@ fn pdf_error_code(error: &PdfWorkflowError) -> &'static str {
         PdfWorkflowError::InvalidPdf | PdfWorkflowError::InvalidToolOutput => "INVALID_PDF",
         PdfWorkflowError::EncryptedPdfUnsupported => "ENCRYPTED_PDF_UNSUPPORTED",
         PdfWorkflowError::ToolUnavailable(_) => "PDF_TOOLS_MISSING",
+        PdfWorkflowError::ToolIntegrityFailed(_) => "RUNTIME_ASSET_INVALID",
         PdfWorkflowError::ToolFailed(_)
         | PdfWorkflowError::ToolTimeout(_)
         | PdfWorkflowError::ToolOutputTooLarge(_) => "PDF_TOOL_FAILED",
@@ -3002,6 +3044,7 @@ fn pdf_export_error_code(error: &PdfWorkflowError) -> &'static str {
         }
         PdfWorkflowError::SourceChanged => "SOURCE_CHANGED",
         PdfWorkflowError::ToolUnavailable(_) => "PDF_TOOLS_MISSING",
+        PdfWorkflowError::ToolIntegrityFailed(_) => "RUNTIME_ASSET_INVALID",
         PdfWorkflowError::ToolFailed(_)
         | PdfWorkflowError::ToolTimeout(_)
         | PdfWorkflowError::ToolOutputTooLarge(_) => "PDF_TOOL_FAILED",
@@ -3174,17 +3217,17 @@ mod tests {
 
     use llamask_core::model::{DocumentPart, EntityType, ImageFinding, ImageRect};
     use llamask_core::{
-        PolicyConfig, scan_docx_with_policy, scan_pptx_with_policy, scan_text_with_policy,
-        scan_xlsx_with_policy,
+        PolicyConfig, RuntimeRegistry, RuntimeTool, RuntimeToolKind, scan_docx_with_policy,
+        scan_pptx_with_policy, scan_text_with_policy, scan_xlsx_with_policy,
     };
 
     use super::{
         DesktopBatchExportSummary, DesktopFileKind, DesktopOutputKind, DesktopScanStage,
         DesktopScanStatus, DesktopSourceKind, DesktopState, MAX_TEXT_BYTES, ScanRecord,
         batch_export_status_is_eligible, batch_output_path, docx_task_metrics,
-        docx_text_review_findings, export_name_and_extension, inspect_file, pptx_task_metrics,
-        pptx_text_review_findings, register_clipboard_text, register_files, review_findings,
-        text_review_findings, xlsx_review_presentation, xlsx_task_metrics,
+        docx_text_review_findings, export_name_and_extension, inspect_file, pdf_tools_available,
+        pptx_task_metrics, pptx_text_review_findings, register_clipboard_text, register_files,
+        review_findings, text_review_findings, xlsx_review_presentation, xlsx_task_metrics,
         xlsx_text_review_findings,
     };
 
@@ -3623,5 +3666,21 @@ mod tests {
         assert!(!json.contains("path"));
         assert!(!json.contains("name"));
         assert!(!json.contains("finding"));
+    }
+
+    #[test]
+    fn partial_bundled_pdf_toolsets_fail_closed() {
+        let registry = RuntimeRegistry {
+            schema_version: 1,
+            detectors: Vec::new(),
+            tools: vec![RuntimeTool {
+                kind: RuntimeToolKind::PdfInfo,
+                executable: PathBuf::from("/unavailable/pdfinfo"),
+                sha256: "a".repeat(64),
+                assets: Vec::new(),
+            }],
+        };
+
+        assert!(!pdf_tools_available(Some(&registry)));
     }
 }

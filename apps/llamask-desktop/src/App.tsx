@@ -99,9 +99,9 @@ const scanStatusLabels: Record<DesktopScanSummary["status"], string> = {
 const scanErrorLabels: Record<string, string> = {
   RUNTIME_REGISTRY_MISSING: "未找到本地 OCR 运行配置",
   RUNTIME_REGISTRY_INVALID: "本地 OCR 运行配置无效",
-  RUNTIME_ASSET_INVALID: "OCR 模型或运行文件完整性校验失败",
+  RUNTIME_ASSET_INVALID: "本地模型或工具文件完整性校验失败",
   OCR_RUNTIME_MISSING: "本地 OCR 未安装",
-  PDF_TOOLS_MISSING: "PDF 本地工具未安装",
+  PDF_TOOLS_MISSING: "PDF 本地工具未就绪",
   PDF_LIMIT_EXCEEDED: "PDF 超过安全处理限制",
   INVALID_PDF: "PDF 结构无效",
   ENCRYPTED_PDF_UNSUPPORTED: "加密 PDF 需要先生成可信解密副本",

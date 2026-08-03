@@ -17,12 +17,29 @@ pub const SIDECAR_PROTOCOL_VERSION: u32 = 1;
 const MAX_STDOUT_BYTES: u64 = 1_048_576;
 const MAX_STDERR_BYTES: u64 = 8_192;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum DetectorKind {
     InformationExtraction,
     LlmReview,
     Ocr,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RuntimeToolKind {
+    #[serde(rename = "pdfinfo")]
+    PdfInfo,
+    #[serde(rename = "pdftoppm")]
+    PdfToPpm,
+}
+
+impl RuntimeToolKind {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::PdfInfo => "pdfinfo",
+            Self::PdfToPpm => "pdftoppm",
+        }
+    }
 }
 
 impl DetectorKind {
@@ -56,9 +73,20 @@ pub struct RuntimeAsset {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTool {
+    pub kind: RuntimeToolKind,
+    pub executable: PathBuf,
+    pub sha256: String,
+    #[serde(default)]
+    pub assets: Vec<RuntimeAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeRegistry {
     pub schema_version: u32,
     pub detectors: Vec<DetectorRuntime>,
+    #[serde(default)]
+    pub tools: Vec<RuntimeTool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -172,12 +200,22 @@ pub enum SidecarError {
     InvalidTimeout(String),
     #[error("模型运行项 {0} 包含无效的资源 SHA-256")]
     InvalidAssetHash(String),
+    #[error("本地工具重复：{0}")]
+    DuplicateTool(String),
+    #[error("本地工具 {0} 包含无效的 SHA-256")]
+    InvalidToolHash(String),
     #[error("本地模型 {0} 的可执行文件或工作目录不可用")]
     RuntimeUnavailable(String),
     #[error("本地模型 {0} 的必要资源无法读取")]
     AssetUnreadable(String),
     #[error("本地模型 {0} 的必要资源完整性校验失败")]
     AssetHashMismatch(String),
+    #[error("本地工具 {0} 不可用")]
+    ToolUnavailable(String),
+    #[error("本地工具 {0} 的必要资源无法读取")]
+    ToolAssetUnreadable(String),
+    #[error("本地工具 {0} 的必要资源完整性校验失败")]
+    ToolAssetHashMismatch(String),
     #[error("无法启动本地模型 {0}")]
     Spawn(String),
     #[error("无法向本地模型 {0} 发送请求")]
@@ -235,6 +273,16 @@ impl RuntimeRegistry {
                 }
             }
         }
+        for tool in &mut registry.tools {
+            if tool.executable.is_relative() {
+                tool.executable = base.join(&tool.executable);
+            }
+            for asset in &mut tool.assets {
+                if asset.path.is_relative() {
+                    asset.path = base.join(&asset.path);
+                }
+            }
+        }
         registry.validate()?;
         Ok(registry)
     }
@@ -264,6 +312,19 @@ impl RuntimeRegistry {
                 return Err(SidecarError::InvalidAssetHash(runtime.id.clone()));
             }
         }
+        let mut tool_kinds = BTreeSet::new();
+        for tool in &self.tools {
+            let id = tool.kind.id();
+            if !tool_kinds.insert(tool.kind) {
+                return Err(SidecarError::DuplicateTool(id.to_owned()));
+            }
+            if tool.executable.as_os_str().is_empty()
+                || !valid_sha256(&tool.sha256)
+                || tool.assets.iter().any(|asset| !valid_sha256(&asset.sha256))
+            {
+                return Err(SidecarError::InvalidToolHash(id.to_owned()));
+            }
+        }
         Ok(())
     }
 
@@ -271,7 +332,11 @@ impl RuntimeRegistry {
         self.detectors.iter().find(|runtime| runtime.id == id)
     }
 
-    pub fn verify_installation(&self) -> Result<(), SidecarError> {
+    pub fn tool(&self, kind: RuntimeToolKind) -> Option<&RuntimeTool> {
+        self.tools.iter().find(|tool| tool.kind == kind)
+    }
+
+    pub fn verify_detectors(&self) -> Result<(), SidecarError> {
         for runtime in &self.detectors {
             if !runtime.executable.is_file()
                 || runtime
@@ -285,6 +350,26 @@ impl RuntimeRegistry {
         }
         Ok(())
     }
+
+    pub fn verified_tool(&self, kind: RuntimeToolKind) -> Result<Option<&Path>, SidecarError> {
+        let Some(tool) = self.tool(kind) else {
+            return Ok(None);
+        };
+        verify_tool(tool)?;
+        Ok(Some(&tool.executable))
+    }
+
+    pub fn verify_installation(&self) -> Result<(), SidecarError> {
+        self.verify_detectors()?;
+        for tool in &self.tools {
+            verify_tool(tool)?;
+        }
+        Ok(())
+    }
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub fn candidates_from_findings(findings: &[Finding]) -> Vec<CandidateSpan> {
@@ -521,6 +606,44 @@ fn verify_assets(runtime: &DetectorRuntime) -> Result<(), SidecarError> {
     Ok(())
 }
 
+fn verify_tool(tool: &RuntimeTool) -> Result<(), SidecarError> {
+    let id = tool.kind.id().to_owned();
+    if !tool.executable.is_file() {
+        return Err(SidecarError::ToolUnavailable(id));
+    }
+    verify_tool_path(&tool.executable, &tool.sha256, tool.kind)?;
+    for asset in &tool.assets {
+        verify_tool_path(&asset.path, &asset.sha256, tool.kind)?;
+    }
+    Ok(())
+}
+
+fn verify_tool_path(
+    path: &Path,
+    expected_sha256: &str,
+    kind: RuntimeToolKind,
+) -> Result<(), SidecarError> {
+    let id = kind.id().to_owned();
+    let mut file =
+        fs::File::open(path).map_err(|_| SidecarError::ToolAssetUnreadable(id.clone()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| SidecarError::ToolAssetUnreadable(id.clone()))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", digest.finalize());
+    if !actual.eq_ignore_ascii_case(expected_sha256) {
+        return Err(SidecarError::ToolAssetHashMismatch(id));
+    }
+    Ok(())
+}
+
 fn read_limited(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
     let mut output = Vec::new();
     reader.take(limit + 1).read_to_end(&mut output)?;
@@ -588,8 +711,9 @@ mod tests {
 
     use super::{
         DetectorKind, DetectorRuntime, OcrSidecarLine, OcrSidecarRequest, OcrSidecarResponse,
-        RuntimeAsset, SIDECAR_PROTOCOL_VERSION, SidecarError, SidecarFinding, SidecarRequest,
-        SidecarResponse, response_to_findings, validate_ocr_response, verify_assets,
+        RuntimeAsset, RuntimeRegistry, RuntimeTool, RuntimeToolKind, SIDECAR_PROTOCOL_VERSION,
+        SidecarError, SidecarFinding, SidecarRequest, SidecarResponse, response_to_findings,
+        validate_ocr_response, verify_assets,
     };
 
     fn runtime() -> DetectorRuntime {
@@ -723,6 +847,75 @@ mod tests {
         assert!(matches!(
             verify_assets(&runtime),
             Err(SidecarError::AssetHashMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn resolves_and_rechecks_pinned_tool_assets() {
+        let directory = tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("pdfinfo");
+        let dependency = bin.join("libpoppler.fixture");
+        fs::write(&executable, b"pinned pdfinfo executable").unwrap();
+        fs::write(&dependency, b"pinned poppler dependency").unwrap();
+        let registry_path = directory.path().join("default.json");
+        let registry_json = serde_json::json!({
+            "schema_version": 1,
+            "detectors": [],
+            "tools": [
+                {
+                    "kind": "pdfinfo",
+                    "executable": "bin/pdfinfo",
+                    "sha256": sha256_hex(b"pinned pdfinfo executable"),
+                    "assets": [
+                        {
+                            "path": "bin/libpoppler.fixture",
+                            "sha256": sha256_hex(b"pinned poppler dependency")
+                        }
+                    ]
+                }
+            ]
+        });
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry_json).unwrap(),
+        )
+        .unwrap();
+
+        let registry = RuntimeRegistry::from_path(&registry_path).unwrap();
+        assert_eq!(
+            registry.verified_tool(RuntimeToolKind::PdfInfo).unwrap(),
+            Some(executable.as_path())
+        );
+
+        fs::write(dependency, b"modified").unwrap();
+        assert!(matches!(
+            registry.verified_tool(RuntimeToolKind::PdfInfo),
+            Err(SidecarError::ToolAssetHashMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_tool_kinds_and_defaults_older_registries() {
+        let legacy: RuntimeRegistry =
+            serde_json::from_str(r#"{"schema_version":1,"detectors":[]}"#).unwrap();
+        assert!(legacy.tools.is_empty());
+
+        let tool = RuntimeTool {
+            kind: RuntimeToolKind::PdfToPpm,
+            executable: PathBuf::from("/unused/pdftoppm"),
+            sha256: "a".repeat(64),
+            assets: Vec::new(),
+        };
+        let registry = RuntimeRegistry {
+            schema_version: 1,
+            detectors: Vec::new(),
+            tools: vec![tool.clone(), tool],
+        };
+        assert!(matches!(
+            registry.validate(),
+            Err(SidecarError::DuplicateTool(_))
         ));
     }
 
